@@ -1,0 +1,21 @@
+{
+  "name": "remote-party-finder-reborn-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build:listings": "node scripts/build-listings.js",
+    "build": "npm run build:listings",
+    "start": "node server.js",
+    "test": "npm run build && git diff --exit-code -- public/assets/listings.js && node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

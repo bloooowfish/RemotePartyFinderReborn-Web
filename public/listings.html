@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en" class="no-js" data-theme="dark">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>remote party finder reborn - listings</title>
+    <link rel="stylesheet" href="/assets/minireset.css" />
+    <link rel="stylesheet" href="/assets/pico.css" />
+    <script defer src="/assets/common.js?v=3"></script>
+<link rel="stylesheet" href="/assets/common.css?v=2" />
+<link rel="stylesheet" href="/assets/listings.css?v=37" />
+<script defer src="/assets/translations.js"></script>
+<script defer src="/assets/listing-data.js?v=de5eccf9a1bbd0c6"></script>
+<script defer src="/assets/listings.js?v=27"></script>
+</head>
+
+<body>
+    <nav class="container">
+        <ul>
+            <li><strong><a href="/" class="contrast">Remote Party Finder Reborn</a></strong></li>
+        </ul>
+        <ul>
+
+            <li role="list" dir="rtl">
+                <a href="javascript:void(0)" aria-haspopup="listbox">Stats</a>
+                <ul role="listbox">
+                    <li><a href="/stats">All Time</a></li>
+                    <li><a href="/stats/7days">7 Days</a></li>
+                </ul>
+            </li>
+            <li role="list" dir="rtl">
+                <a href="javascript:void(0)" aria-haspopup="listbox" style="text-transform: capitalize;">english</a>
+                <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="en">
+                    <li><a href="javascript:void(0)" data-value="en">English</a></li>
+                    <li><a href="javascript:void(0)" data-value="ja">日本語</a></li>
+                    <li><a href="javascript:void(0)" data-value="de">Deutsch</a></li>
+                    <li><a href="javascript:void(0)" data-value="fr">Français</a></li>
+                </ul>
+            </li>
+        </ul>
+    </nav>
+    <div class="container">
+        
+<div id="container">
+    <div class="requires-js settings">
+        <div class="controls">
+            <input type="search" class="search" placeholder="Search" />
+            <select id="data-centre-filter">
+                <option value="All">All</option>
+                <optgroup label="North America">
+                    <option value="Aether">Aether</option>
+                    <option value="Crystal">Crystal</option>
+                    <option value="Dynamis">Dynamis</option>
+                    <option value="Primal">Primal</option>
+                </optgroup>
+                <optgroup label="Europe">
+                    <option value="Chaos">Chaos</option>
+                    <option value="Light">Light</option>
+                </optgroup>
+                <optgroup label="Japan">
+                    <option value="Elemental">Elemental</option>
+                    <option value="Gaia">Gaia</option>
+                    <option value="Mana">Mana</option>
+                    <option value="Meteor">Meteor</option>
+                </optgroup>
+                <optgroup label="Oceania">
+                    <option value="Materia">Materia</option>
+                </optgroup>
+            </select>
+        </div>
+        <div>
+            <div class="filter-controls">
+                <div style="margin-bottom: 0.5rem; font-weight: bold;" data-i18n="advanced">Advanced</div>
+                <div class="filter-card material-card">
+                    <!-- Roles -->
+                    <div class="filter-section">
+                        <h4 data-i18n="roles">Roles</h4>
+                        <div class="roles" id="role-filter">
+                            <div class="role-group">
+                                <small data-i18n="tank">Tank</small>
+                                <div class="jobs">
+                                    <input type="checkbox" id="PLD" value="256">
+                                    <label for="PLD" title="PLD" class="tank">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#PLD"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="WAR" value="1024">
+                                    <label for="WAR" title="WAR" class="tank">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#WAR"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="DRK" value="2097152">
+                                    <label for="DRK" title="DRK" class="tank">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#DRK"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="GNB" value="67108864">
+                                    <label for="GNB" title="GNB" class="tank">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#GNB"></use>
+                                        </svg>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="role-group">
+                                <small data-i18n="healer">Healer</small>
+                                <div class="jobs">
+                                    <input type="checkbox" id="WHM" value="8192">
+                                    <label for="WHM" title="WHM" class="healer">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#WHM"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="SCH" value="131072">
+                                    <label for="SCH" title="SCH" class="healer">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#SCH"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="AST" value="4194304">
+                                    <label for="AST" title="AST" class="healer">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#AST"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="SGE" value="536870912">
+                                    <label for="SGE" title="SGE" class="healer">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#SGE"></use>
+                                        </svg>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="role-group">
+                                <small data-i18n="melee">Melee</small>
+                                <div class="jobs">
+                                    <input type="checkbox" id="MNK" value="512">
+                                    <label for="MNK" title="MNK" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#MNK"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="DRG" value="2048">
+                                    <label for="DRG" title="DRG" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#DRG"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="NIN" value="524288">
+                                    <label for="NIN" title="NIN" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#NIN"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="SAM" value="8388608">
+                                    <label for="SAM" title="SAM" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#SAM"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="RPR" value="268435456">
+                                    <label for="RPR" title="RPR" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#RPR"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="VPR" value="1073741824">
+                                    <label for="VPR" title="VPR" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#VPR"></use>
+                                        </svg>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="role-group">
+                                <small data-i18n="physical_ranged">Physical Ranged</small>
+                                <div class="jobs">
+                                    <input type="checkbox" id="BRD" value="4096">
+                                    <label for="BRD" title="BRD" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#BRD"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="MCH" value="1048576">
+                                    <label for="MCH" title="MCH" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#MCH"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="DNC" value="134217728">
+                                    <label for="DNC" title="DNC" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#DNC"></use>
+                                        </svg>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="role-group">
+                                <small data-i18n="magical_ranged">Magical Ranged</small>
+                                <div class="jobs">
+                                    <input type="checkbox" id="BLM" value="16384">
+                                    <label for="BLM" title="BLM" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#BLM"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="SMN" value="65536">
+                                    <label for="SMN" title="SMN" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#SMN"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="RDM" value="16777216">
+                                    <label for="RDM" title="RDM" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#RDM"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="PCT" value="2147483648">
+                                    <label for="PCT" title="PCT" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#PCT"></use>
+                                        </svg>
+                                    </label>
+                                    <input type="checkbox" id="BLU" value="33554432">
+                                    <label for="BLU" title="BLU" class="dps">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#BLU"></use>
+                                        </svg>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Options 섹션 제거됨: High-end Duty Only는 최상단 컨트롤로 이동 -->
+
+                    <!-- Objective -->
+                    <div class="filter-section">
+                        <h4 data-i18n="objective">Objective</h4>
+                        <div class="chip-group" id="objective-filter">
+                            <input type="checkbox" id="obj-2" value="2">
+                            <label for="obj-2" class="chip"><span data-i18n="duty_completion">Duty
+                                    Completion</span></label>
+
+                            <input type="checkbox" id="obj-4" value="4">
+                            <label for="obj-4" class="chip"><span data-i18n="practice">Practice</span></label>
+
+                            <input type="checkbox" id="obj-8" value="8">
+                            <label for="obj-8" class="chip"><span data-i18n="loot">Loot</span></label>
+                        </div>
+
+                        <div style="margin-top: 1rem;">
+                            <h4 data-i18n="min_item_level">Min Item Level</h4>
+                            <div class="chip-group">
+                                <input type="number" id="min-il-filter" class="il-input" placeholder="0" min="0"
+                                    max="999">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Conditions -->
+                    <div class="filter-section">
+                        <h4 data-i18n="conditions">Conditions</h4>
+                        <div class="chip-group" id="condition-filter">
+                            <input type="checkbox" id="cond-2" value="2">
+                            <label for="cond-2" class="chip"><span data-i18n="duty_complete">Duty
+                                    Complete</span></label>
+
+                            <input type="checkbox" id="cond-4" value="4">
+                            <label for="cond-4" class="chip"><span data-i18n="duty_incomplete">Duty
+                                    Incomplete</span></label>
+
+                            <input type="checkbox" id="cond-8" value="8">
+                            <label for="cond-8" class="chip"><span data-i18n="weekly_reward_unclaimed">Weekly Reward
+                                    Unclaimed</span></label>
+
+                            <input type="checkbox" id="cond-32" value="32">
+                            <label for="cond-32" class="chip"><span data-i18n="one_player_per_job">One Player per
+                                    Job</span></label>
+                        </div>
+                    </div>
+
+                    <!-- Content Type Filter & Select -->
+                    <div class="filter-section">
+                        <h4 data-i18n="content_type">Content Type</h4>
+                        <div class="chip-group" id="content-type-filter">
+                            <input type="checkbox" id="ct-ultimate" value="28">
+                            <label for="ct-ultimate" class="chip"><span data-i18n="ultimate">Ultimate</span></label>
+
+                            <input type="checkbox" id="ct-savage" value="5">
+                            <label for="ct-savage" class="chip"><span data-i18n="savage">Savage</span></label>
+
+                            <input type="checkbox" id="ct-extreme" value="4">
+                            <label for="ct-extreme" class="chip"><span data-i18n="extreme">Extreme</span></label>
+
+                            <input type="checkbox" id="ct-chaotic" value="37">
+                            <label for="ct-chaotic" class="chip"><span data-i18n="chaotic">Chaotic</span></label>
+                        </div>
+
+                        <div style="margin-top: 0.75rem;">
+                            <div class="content-select-container">
+                                <button type="button" class="content-select-trigger" id="content-select-trigger">
+                                    <span data-i18n="select_content">Select Content...</span>
+                                    <svg viewBox="0 0 24 24" fill="currentColor" class="dropdown-arrow"
+                                        aria-hidden="true">
+                                        <path d="M7 10l5 5 5-5z" />
+                                    </svg>
+                                </button>
+                                <div class="content-select-dropdown" id="content-select-dropdown">
+                                    <div class="content-select-list" id="content-select-list">
+                                        <!-- 동적으로 채워짐 -->
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="selected-contents" id="selected-contents">
+                                <!-- 선택된 콘텐츠 태그 표시 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+
+
+            </div>
+        </div>
+    </div>
+    <noscript><em class="no-listings">JavaScript is required to view live listings.</em></noscript>
+    <em id="listings-bootstrap-status" class="no-listings" data-i18n="loading_listings" role="status" aria-live="polite">Loading listings...</em>
+    <em id="server-no-listings" class="no-listings" data-i18n="no_listings" style="display:none;">No listings - download the plugin to help contribute!</em>
+
+    <em id="filter-no-listings" class="no-listings" style="display:none;" data-i18n="no_filter_results">No results found
+        matching your filters</em>
+
+    <div id="listings" class="list">
+    </div>
+    <nav class="pagination-controls requires-js">
+        <a href="javascript:void(0)" class="page-btn prev" title="Previous Page">&lt;</a>
+        <ul class="pagination"></ul>
+        <a href="javascript:void(0)" class="page-btn next" title="Next Page">&gt;</a>
+    </nav>
+</div>
+<!-- Scroll to Top 버튼 -->
+<button id="scroll-to-top" class="scroll-to-top" aria-label="Scroll to top">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
+    </svg>
+</button>
+
+    </div>
+    <footer class="container"
+        style="text-align: center; padding: 2rem 0; font-size: 0.85em; color: var(--muted-color);">
+        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank">lojewalo</a> & <a
+            href="https://ko-fi.com/zeroeightsix" target="_blank">zeroeightsix</a>
+    </footer>
+</body>
+
+</html>
