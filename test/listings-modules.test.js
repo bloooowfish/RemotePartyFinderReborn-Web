@@ -93,6 +93,30 @@ test('source listings filters apply high-end role and search rules', () => {
   assert.equal(matchesListingFilters({ listing }, { ...filters, searchQuery: 'lindwurm' }, 'vamp fatale mana'), false);
 });
 
+test('source listings filter matches the Beastmaster bit above 32-bit range', () => {
+  const beastmasterBit = 1n << 32n;
+  const filters = {
+    centre: 'All',
+    roles: beastmasterBit,
+    objectives: 0,
+    conditions: 0,
+    onePlayerPerJob: false,
+    minItemLevel: 0,
+    contentTypes: [],
+    selectedContents: [],
+    searchQuery: '',
+  };
+  const listing = {
+    num_parties: 1,
+    joinable_roles: '4294967296',
+    high_end: true,
+  };
+
+  assert.equal(roleFilterValue(listing.joinable_roles), beastmasterBit);
+  assert.equal(matchesListingFilters({ listing }, filters), true);
+  assert.equal(matchesListingFilters({ listing: { ...listing, joinable_roles: '0' } }, filters), false);
+});
+
 test('source listings renderer exposes translated description and progress tags', () => {
   const renderer = rendererWithTranslations({
     none: 'なし',

@@ -127,6 +127,12 @@
             de: 'Magischer Fernkampf',
             fr: 'Distant magique',
         },
+        limited_job: {
+            en: 'Limited Job',
+            ja: 'リミテッドジョブ',
+            de: 'Limitierter Job',
+            fr: 'Job limité',
+        },
         no_log_data: {
             en: 'No log data',
             ja: 'ログデータなし',

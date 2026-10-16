@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "build:listings": "node scripts/build-listings.js",
+    "sync:job-icons": "node scripts/sync-job-icons.js",
     "build": "npm run build:listings",
     "start": "node server.js",
     "test": "npm run build && git diff --exit-code -- public/assets/listings.js && node --test"

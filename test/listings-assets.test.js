@@ -110,7 +110,7 @@ test('listings page loads the current listings asset versions', () => {
   const orderedAssets = [
     '/assets/translations.js',
     '/assets/listing-data.js?v=de5eccf9a1bbd0c6',
-    '/assets/listings.js?v=27',
+    '/assets/listings.js?v=28',
   ];
   let previousIndex = -1;
   for (const asset of orderedAssets) {

@@ -33,7 +33,7 @@ function createListingsRenderer(dependencies) {
             const roleClass = slot.role_class ? ` ${escapeHtml(slot.role_class)}` : '';
             const title = escapeHtml(slot.title || '');
             const icon = slot.filled && slot.icon_code
-                ? `<svg viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>`
+                ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>`
                 : '';
 
             return `<div class="slot${filled}${roleClass}" title="${title}">${icon}</div>`;
@@ -192,7 +192,7 @@ function createListingsRenderer(dependencies) {
             ? `${renderParseRailTag(member.parse)}${renderProgressTags(memberProgress)}`
             : '';
         const jobIcon = member.job_code
-            ? `<svg class="job-icon ${escapeHtml(member.role_class || '')}" viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#${escapeHtml(member.job_code)}"></use></svg>`
+            ? `<svg class="job-icon ${escapeHtml(member.role_class || '')}" viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(member.job_code)}"></use></svg>`
             : `<span class="job-unknown" title="${escapeHtml(translate('unknown_job', 'Unknown job'))}">?</span>`;
         const fflogsLink = member.fflogs_character_url
             ? `<a class="fflogs-link" href="${escapeHtml(member.fflogs_character_url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(`Open FFLogs profile for ${member.name}`)}" title="Open FFLogs character profile">FF</a>`
