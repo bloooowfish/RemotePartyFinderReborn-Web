@@ -854,13 +854,120 @@
         const start = (state.page - 1) * state.pageSize;
         const end = start + state.pageSize;
         const pageItems = state.filteredListings.slice(start, end);
+        const existingByKey = new Map(
+            [...listingsEl.children]
+                .filter((element) => element.dataset.listingKey)
+                .map((element) => [element.dataset.listingKey, element]),
+        );
+        const fallbackKeyCounts = new Map();
+        const cards = pageItems.map((container) => {
+            const listingId = container.listing?.id;
+            const fallbackKey = JSON.stringify([
+                container.listing?.creator_name,
+                container.listing?.home_world?.name,
+                container.listing?.created_world?.name,
+                container.listing?.duty_id,
+                container.listing?.duty_type,
+                container.listing?.category,
+                container.listing?.description,
+            ]);
+            const fallbackOccurrence = fallbackKeyCounts.get(fallbackKey) || 0;
+            fallbackKeyCounts.set(fallbackKey, fallbackOccurrence + 1);
+            const listingKey = listingId === null || listingId === undefined
+                ? `fallback:${fallbackKey}:${fallbackOccurrence}`
+                : String(listingId);
+            const existing = existingByKey.get(listingKey);
+            const signature = JSON.stringify(container.listing || {});
 
-        listingsEl.innerHTML = pageItems.map(renderListingCard).join('');
+            if (existing && existing.dataset.renderSignature === signature) {
+                updateListingCardTimes(existing, container);
+                existingByKey.delete(listingKey);
+                return existing;
+            }
+
+            const template = document.createElement('template');
+            template.innerHTML = renderListingCard(container).trim();
+            const card = template.content.firstElementChild;
+            if (!card) return null;
+
+            card.dataset.listingKey = listingKey;
+            card.dataset.renderSignature = signature;
+            if (existing) {
+                preserveExternalSvgNodes(existing, card);
+                existingByKey.delete(listingKey);
+            }
+            return card;
+        }).filter(Boolean);
+
+        for (let index = 0; index < cards.length; index++) {
+            const card = cards[index];
+            const current = listingsEl.children[index] || null;
+            if (current !== card) {
+                listingsEl.insertBefore(card, current);
+            }
+        }
+        while (listingsEl.children.length > cards.length) {
+            listingsEl.lastElementChild.remove();
+        }
         updateEmptyStates(getListings().length, state.filteredListings.length);
         renderPagination();
         updateDataCentreCounts();
         applyTranslations();
         updateTimeDisplays();
+    }
+
+    function updateListingCardTimes(card, container) {
+        const expires = card.querySelector('.expires');
+        if (expires) {
+            expires.dataset.expiresIn = String(container.time_left_seconds || 0);
+            const expiresAt = Number(container.expires_at_timestamp);
+            if (Number.isFinite(expiresAt)) {
+                expires.dataset.expiresAt = String(expiresAt);
+            } else {
+                delete expires.dataset.expiresAt;
+            }
+        }
+
+        const updated = card.querySelector('.updated');
+        if (updated) {
+            updated.dataset.updatedAt = String(container.updated_at_timestamp || 0);
+        }
+    }
+
+    function preserveExternalSvgNodes(previousCard, nextCard) {
+        const iconKey = (svg) => {
+            const href = svg.querySelector('use')?.getAttribute('href');
+            if (!href) return null;
+
+            const memberRow = svg.closest('.member-row');
+            if (memberRow) {
+                return `member:${memberRow.dataset.partyIndex}:${memberRow.dataset.slotIndex}:${href}`;
+            }
+
+            const slot = svg.closest('.party-slots .slot');
+            if (slot) {
+                return `slot:${slot.dataset.slotIndex}:${href}`;
+            }
+
+            const metaItem = svg.closest('.meta .item');
+            if (metaItem) {
+                return `meta:${[...metaItem.classList].sort().join('.')}:${href}`;
+            }
+
+            return null;
+        };
+
+        const previousIcons = new Map();
+        for (const svg of previousCard.querySelectorAll('svg')) {
+            const key = iconKey(svg);
+            if (key) previousIcons.set(key, svg);
+        }
+
+        for (const svg of nextCard.querySelectorAll('svg')) {
+            const key = iconKey(svg);
+            const previous = key ? previousIcons.get(key) : null;
+            if (previous) svg.replaceWith(previous);
+        }
     }
 
     function applyFiltersAndRender() {

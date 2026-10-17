@@ -30,6 +30,40 @@ function rendererWithTranslations(translations = {}) {
   });
 }
 
+function mechanicProgress(overrides = {}) {
+  return {
+    phase_key: 'mechanic-splattershed-2', phase_name: 'Splattershed #2', order: 0,
+    boss_percentage: 35.82, display_text: 'Splattershed #2 35.82%', source: 'tomestone_api',
+    ...overrides,
+  };
+}
+
+test('Tomestone mechanic percentage renders the actual label without a fabricated phase', () => {
+  const { renderPhaseProgress } = rendererWithTranslations();
+  assert.equal(renderPhaseProgress({ phase_progress: [mechanicProgress()] }),
+    '<span class="tag tag-phase" title="Splattershed #2 35.82%">Splattershed #2 35.82%</span>');
+});
+
+test('Tomestone mechanic labels escape HTML characters in title and content', () => {
+  const { renderPhaseProgress } = rendererWithTranslations();
+  const label = 'Splattershed <"two"> & #2';
+  const phase = mechanicProgress({ phase_name: label, display_text: `${label} 35.82%` });
+  assert.equal(renderPhaseProgress({ phase_progress: [phase] }),
+    '<span class="tag tag-phase" title="Splattershed &lt;&quot;two&quot;&gt; &amp; #2 35.82%">Splattershed &lt;&quot;two&quot;&gt; &amp; #2 35.82%</span>');
+});
+
+test('malformed mechanic data and unrelated labels are not rendered', () => {
+  const { renderPhaseProgress } = rendererWithTranslations();
+  for (const overrides of [
+    { phase_name: '' }, { phase_name: '---' }, { source: 'other' }, { order: 2 },
+    { phase_key: 'mechanic-' }, { boss_percentage: null }, { boss_percentage: 0 },
+    { boss_percentage: 101 }, { display_text: 'Unrelated 35.82%' },
+    { display_text: 'Splattershed #2 75.82%' },
+  ]) {
+    assert.equal(renderPhaseProgress({ phase_progress: [mechanicProgress(overrides)] }), '', JSON.stringify(overrides));
+  }
+});
+
 test('source listings utilities expose floored epoch seconds', () => {
   const originalNow = Date.now;
   Date.now = () => 1234567899;
@@ -181,6 +215,20 @@ test('source listings renderer preserves alliance member parse details', () => {
   assert.match(html, /https:\/\/www\.fflogs\.com\/character\/id\/1/);
 });
 
+test('source listings renderer adds stable listing and party-slot keys', () => {
+  const renderer = rendererWithTranslations();
+  const html = renderer.renderListingCard({
+    listing: {
+      id: 4201,
+      display_slots: [{ filled: true, icon_code: 'PLD', title: 'PLD' }],
+      members: [],
+    },
+  });
+
+  assert.match(html, /data-listing-id="4201"/);
+  assert.match(html, /data-slot-index="0"/);
+});
+
 test('source member phase progress suppresses parse percentile while keeping progress and FF link', () => {
   const renderer = rendererWithTranslations();
 
@@ -249,6 +297,23 @@ test('source progress rendering omits zero and invalid final boss percentages', 
   assert.equal(renderProgressTags({ final_boss_percentage: 0 }), '');
   assert.equal(renderProgressTags({ final_boss_percentage: -1 }), '');
   assert.equal(renderProgressTags({ final_boss_percentage: 'not-a-number' }), '');
+  assert.equal(renderProgressTags({ final_boss_percentage: Infinity }), '');
+  assert.equal(renderProgressTags({ final_boss_percentage: 101 }), '');
+});
+
+test('split boss progress shows explicit P1 or P2 label and keeps clear and phase priority', () => {
+  const { renderProgressTags } = rendererWithTranslations();
+  const progress = { final_boss_percentage: 35.2, final_boss_phase: 1 };
+  assert.equal(renderProgressTags(progress),
+    '<span class="tag tag-boss" title="P1 Boss HP: 35.20%">P1 35.20%</span>');
+  assert.doesNotMatch(renderProgressTags({ ...progress, final_clear_count: 2 }), /P1/);
+  assert.match(renderProgressTags({ ...progress, phase_progress: [{ order: 2, display_text: 'P2 70%' }] }), /P2 70%/);
+  assert.equal(renderProgressTags({ ...progress, final_boss_phase: 2 }),
+    '<span class="tag tag-boss" title="P2 Boss HP: 35.20%">P2 35.20%</span>');
+  for (const final_boss_phase of [0, 3, '1', '2', '<script>']) {
+    assert.equal(renderProgressTags({ ...progress, final_boss_phase }),
+      '<span class="tag tag-boss" title="Final Boss HP: 35.20%">35.20%</span>');
+  }
 });
 
 test('source unknown member rows do not render progress or rail tags', () => {
@@ -274,7 +339,8 @@ test('source unknown member rows do not render progress or rail tags', () => {
         party_index: 0,
         progress: {
           final_clear_count: 4,
-          final_boss_percentage: 0,
+          final_boss_percentage: 35.2,
+          final_boss_phase: 1,
           phase_progress: [{ order: 2, display_text: 'P2 75.71%' }],
         },
         role_class: '',
@@ -287,7 +353,7 @@ test('source unknown member rows do not render progress or rail tags', () => {
   });
 
   assert.match(html, /Unknown Member/);
-  assert.doesNotMatch(html, /tag-(boss|phase|clear|hidden)|P2 75\.71%|\u27054|0\.00%/);
+  assert.doesNotMatch(html, /tag-(boss|phase|clear|hidden)|P1 35\.20%|P2 75\.71%|\u27054|0\.00%/);
 });
 
 test('source empty phase progress renders no phase tag', () => {
