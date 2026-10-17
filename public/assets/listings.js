@@ -137,12 +137,12 @@
         }
         function renderDisplaySlots(listing) {
           const slots = Array.isArray(listing.display_slots) ? listing.display_slots : [];
-          return slots.map((slot) => {
+          return slots.map((slot, slotIndex) => {
             const filled = slot.filled ? " filled" : "";
             const roleClass = slot.role_class ? ` ${escapeHtml(slot.role_class)}` : "";
             const title = escapeHtml(slot.title || "");
             const icon = slot.filled && slot.icon_code ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>` : "";
-            return `<div class="slot${filled}${roleClass}" title="${title}">${icon}</div>`;
+            return `<div class="slot${filled}${roleClass}" data-slot-index="${slotIndex}" title="${title}">${icon}</div>`;
           }).join("");
         }
         function renderParseValue(percentile, colorClass, presentTitle, emptyTitle) {
@@ -191,6 +191,16 @@
         }
         function parseDisplayablePhaseProgress(phase) {
           const label = String(phase?.display_text || "").trim();
+          const mechanicName = String(phase?.phase_name || "").trim();
+          const mechanicPercentage = phase?.boss_percentage;
+          if (phase?.source === "tomestone_api" && phase?.order === 0 && typeof phase?.phase_key === "string" && phase.phase_key.startsWith("mechanic-") && phase.phase_key.length > "mechanic-".length && mechanicName.length > 0 && mechanicName.length <= 640 && /[\p{L}\p{N}]/u.test(mechanicName) && !/[\u0000-\u001f\u007f-\u009f]/u.test(mechanicName) && typeof mechanicPercentage === "number" && Number.isFinite(mechanicPercentage) && mechanicPercentage > 0 && mechanicPercentage <= 100 && label.startsWith(mechanicName)) {
+            const suffix = label.slice(mechanicName.length);
+            const mechanicMatch = /^\s+(\d+(?:\.\d+)?)%$/.exec(suffix);
+            if (mechanicMatch && Math.abs(Number(mechanicMatch[1]) - mechanicPercentage) < 5e-3) {
+              return { order: 0, bossPercentage: mechanicPercentage };
+            }
+          }
+          if (String(phase?.phase_key || "").startsWith("mechanic-")) return null;
           const match = /^P(\d+)\s+(\d+(?:\.\d+)?)%/i.exec(label);
           if (!match) return null;
           const order = Number(match[1]);
@@ -241,8 +251,12 @@
             return phaseProgress;
           }
           const finalBossPercentage = Number(progress?.final_boss_percentage);
-          if (Number.isFinite(finalBossPercentage) && finalBossPercentage > 0) {
+          if (Number.isFinite(finalBossPercentage) && finalBossPercentage > 0 && finalBossPercentage <= 100) {
             const label = finalBossPercentage.toFixed(2);
+            const phase = progress?.final_boss_phase;
+            if (phase === 1 || phase === 2) {
+              return `<span class="tag tag-boss" title="${escapeHtml(`P${phase} Boss HP: ${label}%`)}">P${phase} ${escapeHtml(label)}%</span>`;
+            }
             return `<span class="tag tag-boss" title="${escapeHtml(`Final Boss HP: ${label}%`)}">${escapeHtml(label)}%</span>`;
           }
           return "";
@@ -314,6 +328,7 @@
           const membersSection = listing.is_alliance_view ? renderAllianceMembersSection(listing) : renderMembersSection(listing);
           return `
                 <div class="${listingClass}"
+                    data-listing-id="${escapeHtml(listing.id)}"
                     data-centre="${escapeHtml(listing.data_centre || "")}"
                     data-joinable-roles="${escapeHtml(listing.joinable_roles || 0)}"
                     data-num-parties="${escapeHtml(listing.num_parties || 0)}"
@@ -1076,12 +1091,103 @@
           const start = (state.page - 1) * state.pageSize;
           const end = start + state.pageSize;
           const pageItems = state.filteredListings.slice(start, end);
-          listingsEl.innerHTML = pageItems.map(renderListingCard).join("");
+          const existingByKey = new Map(
+            [...listingsEl.children].filter((element) => element.dataset.listingKey).map((element) => [element.dataset.listingKey, element])
+          );
+          const fallbackKeyCounts = /* @__PURE__ */ new Map();
+          const cards = pageItems.map((container) => {
+            const listingId = container.listing?.id;
+            const fallbackKey = JSON.stringify([
+              container.listing?.creator_name,
+              container.listing?.home_world?.name,
+              container.listing?.created_world?.name,
+              container.listing?.duty_id,
+              container.listing?.duty_type,
+              container.listing?.category,
+              container.listing?.description
+            ]);
+            const fallbackOccurrence = fallbackKeyCounts.get(fallbackKey) || 0;
+            fallbackKeyCounts.set(fallbackKey, fallbackOccurrence + 1);
+            const listingKey = listingId === null || listingId === void 0 ? `fallback:${fallbackKey}:${fallbackOccurrence}` : String(listingId);
+            const existing = existingByKey.get(listingKey);
+            const signature = JSON.stringify(container.listing || {});
+            if (existing && existing.dataset.renderSignature === signature) {
+              updateListingCardTimes(existing, container);
+              existingByKey.delete(listingKey);
+              return existing;
+            }
+            const template = document.createElement("template");
+            template.innerHTML = renderListingCard(container).trim();
+            const card = template.content.firstElementChild;
+            if (!card) return null;
+            card.dataset.listingKey = listingKey;
+            card.dataset.renderSignature = signature;
+            if (existing) {
+              preserveExternalSvgNodes(existing, card);
+              existingByKey.delete(listingKey);
+            }
+            return card;
+          }).filter(Boolean);
+          for (let index = 0; index < cards.length; index++) {
+            const card = cards[index];
+            const current = listingsEl.children[index] || null;
+            if (current !== card) {
+              listingsEl.insertBefore(card, current);
+            }
+          }
+          while (listingsEl.children.length > cards.length) {
+            listingsEl.lastElementChild.remove();
+          }
           updateEmptyStates(getListings().length, state.filteredListings.length);
           renderPagination();
           updateDataCentreCounts();
           applyTranslations();
           updateTimeDisplays();
+        }
+        function updateListingCardTimes(card, container) {
+          const expires = card.querySelector(".expires");
+          if (expires) {
+            expires.dataset.expiresIn = String(container.time_left_seconds || 0);
+            const expiresAt = Number(container.expires_at_timestamp);
+            if (Number.isFinite(expiresAt)) {
+              expires.dataset.expiresAt = String(expiresAt);
+            } else {
+              delete expires.dataset.expiresAt;
+            }
+          }
+          const updated = card.querySelector(".updated");
+          if (updated) {
+            updated.dataset.updatedAt = String(container.updated_at_timestamp || 0);
+          }
+        }
+        function preserveExternalSvgNodes(previousCard, nextCard) {
+          const iconKey = (svg) => {
+            const href = svg.querySelector("use")?.getAttribute("href");
+            if (!href) return null;
+            const memberRow = svg.closest(".member-row");
+            if (memberRow) {
+              return `member:${memberRow.dataset.partyIndex}:${memberRow.dataset.slotIndex}:${href}`;
+            }
+            const slot = svg.closest(".party-slots .slot");
+            if (slot) {
+              return `slot:${slot.dataset.slotIndex}:${href}`;
+            }
+            const metaItem = svg.closest(".meta .item");
+            if (metaItem) {
+              return `meta:${[...metaItem.classList].sort().join(".")}:${href}`;
+            }
+            return null;
+          };
+          const previousIcons = /* @__PURE__ */ new Map();
+          for (const svg of previousCard.querySelectorAll("svg")) {
+            const key = iconKey(svg);
+            if (key) previousIcons.set(key, svg);
+          }
+          for (const svg of nextCard.querySelectorAll("svg")) {
+            const key = iconKey(svg);
+            const previous = key ? previousIcons.get(key) : null;
+            if (previous) svg.replaceWith(previous);
+          }
         }
         function applyFiltersAndRender() {
           state.filteredListings = getListings().filter(listingMatchesFilters);

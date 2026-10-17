@@ -28,7 +28,7 @@ function createListingsRenderer(dependencies) {
 
     function renderDisplaySlots(listing) {
         const slots = Array.isArray(listing.display_slots) ? listing.display_slots : [];
-        return slots.map((slot) => {
+        return slots.map((slot, slotIndex) => {
             const filled = slot.filled ? ' filled' : '';
             const roleClass = slot.role_class ? ` ${escapeHtml(slot.role_class)}` : '';
             const title = escapeHtml(slot.title || '');
@@ -36,7 +36,7 @@ function createListingsRenderer(dependencies) {
                 ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>`
                 : '';
 
-            return `<div class="slot${filled}${roleClass}" title="${title}">${icon}</div>`;
+            return `<div class="slot${filled}${roleClass}" data-slot-index="${slotIndex}" title="${title}">${icon}</div>`;
         }).join('');
     }
 
@@ -108,6 +108,26 @@ function createListingsRenderer(dependencies) {
 
     function parseDisplayablePhaseProgress(phase) {
         const label = String(phase?.display_text || '').trim();
+        const mechanicName = String(phase?.phase_name || '').trim();
+        const mechanicPercentage = phase?.boss_percentage;
+        if (phase?.source === 'tomestone_api'
+            && phase?.order === 0
+            && typeof phase?.phase_key === 'string'
+            && phase.phase_key.startsWith('mechanic-')
+            && phase.phase_key.length > 'mechanic-'.length
+            && mechanicName.length > 0 && mechanicName.length <= 640
+            && /[\p{L}\p{N}]/u.test(mechanicName)
+            && !/[\u0000-\u001f\u007f-\u009f]/u.test(mechanicName)
+            && typeof mechanicPercentage === 'number'
+            && Number.isFinite(mechanicPercentage) && mechanicPercentage > 0 && mechanicPercentage <= 100
+            && label.startsWith(mechanicName)) {
+            const suffix = label.slice(mechanicName.length);
+            const mechanicMatch = /^\s+(\d+(?:\.\d+)?)%$/.exec(suffix);
+            if (mechanicMatch && Math.abs(Number(mechanicMatch[1]) - mechanicPercentage) < 0.005) {
+                return { order: 0, bossPercentage: mechanicPercentage };
+            }
+        }
+        if (String(phase?.phase_key || '').startsWith('mechanic-')) return null;
         const match = /^P(\d+)\s+(\d+(?:\.\d+)?)%/i.exec(label);
         if (!match) return null;
 
@@ -175,8 +195,12 @@ function createListingsRenderer(dependencies) {
         }
 
         const finalBossPercentage = Number(progress?.final_boss_percentage);
-        if (Number.isFinite(finalBossPercentage) && finalBossPercentage > 0) {
+        if (Number.isFinite(finalBossPercentage) && finalBossPercentage > 0 && finalBossPercentage <= 100) {
             const label = finalBossPercentage.toFixed(2);
+            const phase = progress?.final_boss_phase;
+            if (phase === 1 || phase === 2) {
+                return `<span class="tag tag-boss" title="${escapeHtml(`P${phase} Boss HP: ${label}%`)}">P${phase} ${escapeHtml(label)}%</span>`;
+            }
             return `<span class="tag tag-boss" title="${escapeHtml(`Final Boss HP: ${label}%`)}">${escapeHtml(label)}%</span>`;
         }
 
@@ -277,6 +301,7 @@ function createListingsRenderer(dependencies) {
 
         return `
                 <div class="${listingClass}"
+                    data-listing-id="${escapeHtml(listing.id)}"
                     data-centre="${escapeHtml(listing.data_centre || '')}"
                     data-joinable-roles="${escapeHtml(listing.joinable_roles || 0)}"
                     data-num-parties="${escapeHtml(listing.num_parties || 0)}"
