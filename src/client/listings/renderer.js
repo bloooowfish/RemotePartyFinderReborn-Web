@@ -26,6 +26,21 @@ function createListingsRenderer(dependencies) {
         return `<div class="description">${flags}<div class="desc-text">${escapeHtml(description)}</div></div>`;
     }
 
+    function renderOpenSlotRoleIcon(roleClass) {
+        const roles = new Set(String(roleClass || '').toLowerCase().split(/\s+/).filter(Boolean));
+        const hasTank = roles.has('tank');
+        const hasHealer = roles.has('healer');
+        const hasDps = roles.has('dps');
+        const count = (hasTank ? 1 : 0) + (hasHealer ? 1 : 0) + (hasDps ? 1 : 0);
+
+        if (count !== 1) {
+            return '';
+        }
+
+        const symbolId = hasTank ? 'ROLE_TANK' : hasHealer ? 'ROLE_HEALER' : 'ROLE_DPS';
+        return `<svg class="slot-role-icon" viewBox="0 0 56 56" aria-hidden="true"><use href="/assets/role-icons.svg#${symbolId}"></use></svg>`;
+    }
+
     function renderDisplaySlots(listing) {
         const slots = Array.isArray(listing.display_slots) ? listing.display_slots : [];
         return slots.map((slot, slotIndex) => {
@@ -34,7 +49,7 @@ function createListingsRenderer(dependencies) {
             const title = escapeHtml(slot.title || '');
             const icon = slot.filled && slot.icon_code
                 ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>`
-                : '';
+                : renderOpenSlotRoleIcon(slot.role_class);
 
             return `<div class="slot${filled}${roleClass}" data-slot-index="${slotIndex}" title="${title}">${icon}</div>`;
         }).join('');
@@ -42,7 +57,7 @@ function createListingsRenderer(dependencies) {
 
     function renderParseValue(percentile, colorClass, presentTitle, emptyTitle) {
         if (percentile === null || percentile === undefined) {
-            return `<span class="parse parse-none" title="${escapeHtml(emptyTitle)}">--</span>`;
+            return `<span class="parse parse-none" title="${escapeHtml(emptyTitle)}">—</span>`;
         }
 
         return `<span class="parse ${escapeHtml(colorClass || 'parse-none')}" title="${escapeHtml(`${presentTitle}: ${percentile}`)}">${escapeHtml(percentile)}</span>`;
@@ -50,7 +65,7 @@ function createListingsRenderer(dependencies) {
 
     function renderParseBlock(parse) {
         if (!parse) {
-            return `<span class="parse parse-none" title="${escapeHtml(translate('no_log_data', 'No log data'))}">--</span>`;
+            return `<span class="parse parse-none" title="${escapeHtml(translate('no_log_data', 'No log data'))}">—</span>`;
         }
 
         if (parse.hidden) {
@@ -324,7 +339,7 @@ function createListingsRenderer(dependencies) {
                     <div class="middle">
                         <div class="stat">
                             <div class="name">${escapeHtml(translate('min_il_short', 'Min IL'))}</div>
-                            <div class="value">${escapeHtml(listing.min_item_level || 0)}</div>
+                            <div class="value">${Number(listing.min_item_level) > 0 ? escapeHtml(listing.min_item_level) : '—'}</div>
                         </div>
                     </div>
                     <div class="right meta">

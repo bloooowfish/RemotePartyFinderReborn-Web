@@ -13,7 +13,7 @@ const TRANSLATIONS = {
     one_player_per_job: { en: "One Player per Job", ja: "ジョブ重複不可", de: "Doppelte Jobs nicht möglich", fr: "Jobs identiques impossibles", },
     high_end_duty: { en: "High-end Duty", ja: "高難易度コンテンツ", de: "Schwierige Inhalte", fr: "Missions à difficulté élevée", },
     average_item_level: { en: "Average Item Level", ja: "平均アイテムレベル", de: "Ø Gegen­stands­stufe", fr: "Niveau d'objet moyen", },
-    min_item_level: { en: "Min Item Level", ja: "平均IL", de: "Min. Gegenstandsstufe", fr: "Niveau d'objet min.", },
+    min_item_level: { en: "Min Item Level", ja: "下限IL", de: "Min. Gegenstandsstufe", fr: "Niveau d'objet min.", },
     no_listings: { en: "No collected listing data available. Please install the plugin to contribute!", ja: "収集された募集データがありません。プラグインを導入して募集情報を共有してください！", de: "Keine gesammelten Daten verfügbar. Bitte installiere das Plugin, um beizutragen!", fr: "Aucune donnée collectée disponible. Veuillez installer le plugin pour contribuer !", },
     no_members: { en: "No information available for other members", ja: "他メンバーの情報がありません", de: "Keine Informationen zu anderen Mitgliedern verfügbar", fr: "Aucune information disponible pour les autres membres", },
     no_filter_results: { en: "No results found matching your filters", ja: "条件に一致する募集が見つかりませんでした", de: "Keine Ergebnisse für deine Filter gefunden", fr: "Aucun résultat ne correspond à vos filtres", },

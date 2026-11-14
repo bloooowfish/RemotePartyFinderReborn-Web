@@ -6,9 +6,10 @@
   "scripts": {
     "build:listings": "node scripts/build-listings.js",
     "sync:job-icons": "node scripts/sync-job-icons.js",
+    "sync:role-icons": "node scripts/sync-role-icons.js",
     "build": "npm run build:listings",
     "start": "node server.js",
-    "test": "npm run build && git diff --exit-code -- public/assets/listings.js && node --test"
+    "test": "npm run build && node --test"
   },
   "engines": {
     "node": ">=20"

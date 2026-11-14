@@ -7,40 +7,42 @@
     <title>remote party finder reborn - listings</title>
     <link rel="stylesheet" href="/assets/minireset.css" />
     <link rel="stylesheet" href="/assets/pico.css" />
-    <script defer src="/assets/common.js?v=3"></script>
-<link rel="stylesheet" href="/assets/common.css?v=2" />
-<link rel="stylesheet" href="/assets/listings.css?v=37" />
-<script defer src="/assets/translations.js"></script>
-<script defer src="/assets/listing-data.js?v=de5eccf9a1bbd0c6"></script>
-<script defer src="/assets/listings.js?v=32"></script>
+    <script defer src="/assets/common.js"></script>
+    <link rel="stylesheet" href="/assets/common.css" />
+    <link rel="stylesheet" href="/assets/listings.css" />
+    <script defer src="/assets/translations.js"></script>
+    <script defer src="/assets/listing-data.en.js"></script>
+    <script defer src="/assets/listings.js"></script>
 </head>
 
 <body>
-    <nav class="container">
-        <ul>
-            <li><strong><a href="/" class="contrast">Remote Party Finder Reborn</a></strong></li>
-        </ul>
-        <ul>
-
-            <li role="list" dir="rtl">
-                <a href="javascript:void(0)" aria-haspopup="listbox">Stats</a>
-                <ul role="listbox">
-                    <li><a href="/stats">All Time</a></li>
-                    <li><a href="/stats/7days">7 Days</a></li>
-                </ul>
-            </li>
-            <li role="list" dir="rtl">
-                <a href="javascript:void(0)" aria-haspopup="listbox" style="text-transform: capitalize;">english</a>
-                <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="en">
-                    <li><a href="javascript:void(0)" data-value="en">English</a></li>
-                    <li><a href="javascript:void(0)" data-value="ja">日本語</a></li>
-                    <li><a href="javascript:void(0)" data-value="de">Deutsch</a></li>
-                    <li><a href="javascript:void(0)" data-value="fr">Français</a></li>
-                </ul>
-            </li>
-        </ul>
-    </nav>
-    <div class="container">
+    <header>
+        <nav class="container">
+            <ul>
+                <li><strong><a href="/listings" class="contrast">Remote Party Finder Reborn</a></strong></li>
+            </ul>
+            <ul>
+                <li role="list" dir="rtl">
+                    <a href="#stats" aria-haspopup="listbox">Stats</a>
+                    <ul role="listbox">
+                        <li><a href="/stats">All Time</a></li>
+                        <li><a href="/stats/7days">7 Days</a></li>
+                    </ul>
+                </li>
+                <li role="list" dir="rtl">
+                    <a href="#language" aria-haspopup="listbox" style="text-transform: capitalize;">english</a>
+                    <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="en">
+                        <li><a href="#lang-en" data-value="en">English</a></li>
+                        <li><a href="#lang-ja" data-value="ja">日本語</a></li>
+                        <li><a href="#lang-de" data-value="de">Deutsch</a></li>
+                        <li><a href="#lang-fr" data-value="fr">Français</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </nav>
+    </header>
+    <main class="container">
+        <h1 class="listings-title" data-i18n="listings_heading">Party Finder Listings</h1>
         
 <div id="container">
     <div class="requires-js settings">
@@ -71,14 +73,21 @@
         </div>
         <div>
             <div class="filter-controls">
-                <div style="margin-bottom: 0.5rem; font-weight: bold;" data-i18n="advanced">Advanced</div>
-                <div class="filter-card material-card">
+                <div class="advanced-filters-bar">
+                    <button type="button" id="advanced-filters-toggle" class="advanced-filters-toggle" aria-expanded="false" aria-controls="advanced-filters-panel">
+                        <span class="advanced-toggle-chevron" aria-hidden="true">▸</span>
+                        <span data-i18n="advanced">Advanced</span>
+                        <span id="active-filters-badge" class="active-filters-badge" hidden>0</span>
+                    </button>
+                    <button type="button" id="reset-filters-btn" class="reset-filters-btn" data-i18n="reset_filters" hidden>Reset Filters</button>
+                </div>
+                <div class="filter-card material-card collapsed" id="advanced-filters-panel">
                     <!-- Roles -->
                     <div class="filter-section">
-                        <h4 data-i18n="roles">Roles</h4>
+                        <h2 class="filter-heading" data-i18n="roles">Roles</h2>
                         <div class="roles" id="role-filter">
                             <div class="role-group">
-                                <small data-i18n="tank">Tank</small>
+                                <button type="button" class="role-group-toggle" data-role-group="tank" aria-pressed="false" data-i18n="tank">Tank</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="PLD" value="256">
                                     <label for="PLD" title="PLD" class="tank">
@@ -107,7 +116,7 @@
                                 </div>
                             </div>
                             <div class="role-group">
-                                <small data-i18n="healer">Healer</small>
+                                <button type="button" class="role-group-toggle" data-role-group="healer" aria-pressed="false" data-i18n="healer">Healer</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="WHM" value="8192">
                                     <label for="WHM" title="WHM" class="healer">
@@ -136,7 +145,7 @@
                                 </div>
                             </div>
                             <div class="role-group">
-                                <small data-i18n="melee">Melee</small>
+                                <button type="button" class="role-group-toggle" data-role-group="melee" aria-pressed="false" data-i18n="melee">Melee</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="MNK" value="512">
                                     <label for="MNK" title="MNK" class="dps">
@@ -177,7 +186,7 @@
                                 </div>
                             </div>
                             <div class="role-group">
-                                <small data-i18n="physical_ranged">Physical Ranged</small>
+                                <button type="button" class="role-group-toggle" data-role-group="physical_ranged" aria-pressed="false" data-i18n="physical_ranged">Physical Ranged</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="BRD" value="4096">
                                     <label for="BRD" title="BRD" class="dps">
@@ -200,7 +209,7 @@
                                 </div>
                             </div>
                             <div class="role-group">
-                                <small data-i18n="magical_ranged">Magical Ranged</small>
+                                <button type="button" class="role-group-toggle" data-role-group="magical_ranged" aria-pressed="false" data-i18n="magical_ranged">Magical Ranged</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="BLM" value="16384">
                                     <label for="BLM" title="BLM" class="dps">
@@ -229,7 +238,7 @@
                                 </div>
                             </div>
                             <div class="role-group">
-                                <small data-i18n="limited_job">Limited Job</small>
+                                <button type="button" class="role-group-toggle" data-role-group="limited_job" aria-pressed="false" data-i18n="limited_job">Limited Job</button>
                                 <div class="jobs">
                                     <input type="checkbox" id="BLU" value="33554432">
                                     <label for="BLU" title="BLU" class="dps">
@@ -248,11 +257,9 @@
                         </div>
                     </div>
 
-                    <!-- Options 섹션 제거됨: High-end Duty Only는 최상단 컨트롤로 이동 -->
-
                     <!-- Objective -->
                     <div class="filter-section">
-                        <h4 data-i18n="objective">Objective</h4>
+                        <h2 class="filter-heading" data-i18n="objective">Objective</h2>
                         <div class="chip-group" id="objective-filter">
                             <input type="checkbox" id="obj-2" value="2">
                             <label for="obj-2" class="chip"><span data-i18n="duty_completion">Duty
@@ -266,17 +273,17 @@
                         </div>
 
                         <div style="margin-top: 1rem;">
-                            <h4 data-i18n="min_item_level">Min Item Level</h4>
+                            <h2 class="filter-heading" data-i18n="min_item_level">Min Item Level</h2>
                             <div class="chip-group">
                                 <input type="number" id="min-il-filter" class="il-input" placeholder="0" min="0"
-                                    max="999">
+                                    max="999" aria-label="Min Item Level">
                             </div>
                         </div>
                     </div>
 
                     <!-- Conditions -->
                     <div class="filter-section">
-                        <h4 data-i18n="conditions">Conditions</h4>
+                        <h2 class="filter-heading" data-i18n="conditions">Conditions</h2>
                         <div class="chip-group" id="condition-filter">
                             <input type="checkbox" id="cond-2" value="2">
                             <label for="cond-2" class="chip"><span data-i18n="duty_complete">Duty
@@ -298,7 +305,7 @@
 
                     <!-- Content Type Filter & Select -->
                     <div class="filter-section">
-                        <h4 data-i18n="content_type">Content Type</h4>
+                        <h2 class="filter-heading" data-i18n="content_type">Content Type</h2>
                         <div class="chip-group" id="content-type-filter">
                             <input type="checkbox" id="ct-ultimate" value="28">
                             <label for="ct-ultimate" class="chip"><span data-i18n="ultimate">Ultimate</span></label>
@@ -315,7 +322,7 @@
 
                         <div style="margin-top: 0.75rem;">
                             <div class="content-select-container">
-                                <button type="button" class="content-select-trigger" id="content-select-trigger">
+                                <button type="button" class="content-select-trigger" id="content-select-trigger" aria-expanded="false">
                                     <span data-i18n="select_content">Select Content...</span>
                                     <svg viewBox="0 0 24 24" fill="currentColor" class="dropdown-arrow"
                                         aria-hidden="true">
@@ -323,20 +330,18 @@
                                     </svg>
                                 </button>
                                 <div class="content-select-dropdown" id="content-select-dropdown">
+                                    <input type="search" id="content-select-search" class="content-select-search" placeholder="Search duties..." aria-label="Search duties" />
                                     <div class="content-select-list" id="content-select-list">
-                                        <!-- 동적으로 채워짐 -->
+                                        <!-- Populated dynamically -->
                                     </div>
                                 </div>
                             </div>
                             <div class="selected-contents" id="selected-contents">
-                                <!-- 선택된 콘텐츠 태그 표시 -->
+                                <!-- Selected content tags -->
                             </div>
                         </div>
                     </div>
                 </div>
-
-
-
             </div>
         </div>
     </div>
@@ -349,24 +354,24 @@
 
     <div id="listings" class="list">
     </div>
-    <nav class="pagination-controls requires-js">
-        <a href="javascript:void(0)" class="page-btn prev" title="Previous Page">&lt;</a>
+    <nav class="pagination-controls requires-js" aria-label="Listings pagination" hidden>
+        <a href="#listings" class="page-btn prev" title="Previous Page" aria-label="Previous Page">&lt;</a>
         <ul class="pagination"></ul>
-        <a href="javascript:void(0)" class="page-btn next" title="Next Page">&gt;</a>
+        <a href="#listings" class="page-btn next" title="Next Page" aria-label="Next Page">&gt;</a>
     </nav>
 </div>
-<!-- Scroll to Top 버튼 -->
+<!-- Scroll to Top button -->
 <button id="scroll-to-top" class="scroll-to-top" aria-label="Scroll to top">
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
     </svg>
 </button>
 
-    </div>
+    </main>
     <footer class="container"
         style="text-align: center; padding: 2rem 0; font-size: 0.85em; color: var(--muted-color);">
-        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank">lojewalo</a> & <a
-            href="https://ko-fi.com/zeroeightsix" target="_blank">zeroeightsix</a>
+        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank" rel="noopener noreferrer">lojewalo</a> &amp; <a
+            href="https://ko-fi.com/zeroeightsix" target="_blank" rel="noopener noreferrer">zeroeightsix</a>
     </footer>
 </body>
 

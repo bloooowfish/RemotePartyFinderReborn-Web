@@ -13,7 +13,7 @@ function matchesListingFilters(container, filters, searchText = '') {
         return false;
     }
 
-    if (Number(listing.num_parties) === 1 && filters.roles !== 0n) {
+    if (Number(listing.num_parties) >= 1 && filters.roles !== 0n) {
         if ((filters.roles & roleFilterValue(listing.joinable_roles)) === 0n) {
             return false;
         }

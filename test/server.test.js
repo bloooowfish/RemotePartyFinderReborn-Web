@@ -2,9 +2,20 @@ const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
 const fs = require('node:fs/promises');
 const http = require('node:http');
+const net = require('node:net');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
-const { createServer, SERVICE_UNAVAILABLE, pickLanguage } = require('../server');
+const {
+  createServer,
+  isAllowedWsOrigin,
+  isRelayPath,
+  isValidRequestTarget,
+  SERVICE_UNAVAILABLE,
+  pickLanguage,
+  stripHopByHopHeaders,
+  timingSafeEqualString,
+} = require('../server');
 
 let server;
 let baseUrl;
@@ -78,14 +89,15 @@ test('localized HTML responses vary by language headers and cookies', async () =
   });
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get('vary'), 'Accept-Language, Cookie');
+  assert.equal(response.headers.get('vary'), 'Accept-Language, Cookie, Accept-Encoding');
 });
 
 test('uses immutable caching only for explicitly versioned assets', async () => {
   const unversioned = await fetch(`${baseUrl}/assets/translations.js`);
   assert.equal(unversioned.status, 200);
   assert.equal(unversioned.headers.get('cache-control'), 'no-cache');
-  assert.equal(unversioned.headers.get('vary'), null);
+  assert.equal(unversioned.headers.get('vary'), 'Accept-Encoding');
+  assert.equal(unversioned.headers.get('x-content-type-options'), 'nosniff');
 
   const versioned = await fetch(`${baseUrl}/assets/listings.js?v=20`);
   assert.equal(versioned.status, 200);
@@ -424,7 +436,7 @@ test('broadcasts authenticated listing revision webhooks to subscribed websocket
   }
 });
 
-test('applies lower listing revisions after the origin server restarts', async () => {
+test('applies strictly monotonic listing revisions and rejects stale or replayed revisions', async () => {
   const app = createServer({
     revisionWebhookSecret: 'webhook-secret',
   });
@@ -472,16 +484,25 @@ test('applies lower listing revisions after the origin server restarts', async (
     });
     assert.equal((await higherMessage).revision, 9);
 
-    const lowerMessage = onceWebSocketMessage(
+    assert.deepEqual(await postRevision(9), {
+      status: 200,
+      body: { ok: true, revision: 9, applied: false },
+    });
+
+    assert.deepEqual(await postRevision(2), {
+      status: 200,
+      body: { ok: true, revision: 9, applied: false },
+    });
+
+    const nextHigherMessage = onceWebSocketMessage(
       ws,
       (candidate) => candidate.type === 'listings_revision_changed',
     );
-    lowerMessage.catch(() => {});
-    assert.deepEqual(await postRevision(2), {
+    assert.deepEqual(await postRevision(12), {
       status: 200,
-      body: { ok: true, revision: 2, applied: true },
+      body: { ok: true, revision: 12, applied: true },
     });
-    assert.equal((await lowerMessage).revision, 2);
+    assert.equal((await nextHigherMessage).revision, 12);
 
   } finally {
     if (ws && ws.readyState < WebSocket.CLOSING) {
@@ -522,5 +543,349 @@ test('rejects unauthenticated listing revision webhooks', async () => {
     await new Promise((resolve, reject) => {
       app.close((error) => (error ? reject(error) : resolve()));
     });
+  }
+});
+
+
+function sendRawHttp(port, rawRequest) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1');
+    const chunks = [];
+    socket.on('connect', () => {
+      socket.end(rawRequest);
+    });
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', reject);
+  });
+}
+
+function httpGetRaw(url, headers = {}, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method,
+      headers,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('SSRF and open-proxy request targets are blocked early on HTTP and WS upgrade', async () => {
+  assert.equal(isValidRequestTarget('/listings?page=2'), true);
+  assert.equal(isValidRequestTarget('//evil.com/listings'), false);
+  assert.equal(isValidRequestTarget('///evil.com/listings'), false);
+  assert.equal(isValidRequestTarget('http://evil.com/api/listings'), false);
+  assert.equal(isValidRequestTarget('evil.com'), false);
+  assert.equal(isValidRequestTarget('/listings\r\nx'), false);
+
+  const port = Number(new URL(baseUrl).port);
+  const protoRelative = await sendRawHttp(port, 'GET //evil.com/listings HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+  assert.match(protoRelative, /^HTTP\/1\.1 400 Bad Request/);
+
+  const absoluteUri = await sendRawHttp(port, 'GET http://evil.com/api/listings HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+  assert.match(absoluteUri, /^HTTP\/1\.1 400 Bad Request/);
+
+  const badWsTarget = await sendRawHttp(
+    port,
+    'GET //evil.com/api/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+  );
+  assert.match(badWsTarget, /^HTTP\/1\.1 400 Bad Request/);
+});
+
+test('relay path validation enforces exact /api/* and /contribute* boundaries and 426 upgrade handling', async () => {
+  assert.equal(isRelayPath('/api/listings'), true);
+  assert.equal(isRelayPath('/api'), false);
+  assert.equal(isRelayPath('/api-evil'), false);
+  assert.equal(isRelayPath('/contribute'), true);
+  assert.equal(isRelayPath('/contribute/multiple'), true);
+  assert.equal(isRelayPath('/contribute-evil'), false);
+
+  const notRelay = await fetch(`${baseUrl}/contribute-evil`);
+  assert.equal(notRelay.status, 404);
+
+  const plainWsHttp = await fetch(`${baseUrl}/api/ws`);
+  assert.equal(plainWsHttp.status, 426);
+  assert.equal(plainWsHttp.headers.get('upgrade'), 'websocket');
+
+  const port = Number(new URL(baseUrl).port);
+  const badUpgrade = await sendRawHttp(
+    port,
+    'GET /listings HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\n',
+  );
+  assert.match(badUpgrade, /^HTTP\/1\.1 426 Upgrade Required/);
+});
+
+test('proxy strips hop-by-hop headers, sets X-RPF-Forwarded-For from socket IP, and aborts upstream on client disconnect', async () => {
+  let lastRequest = null;
+  let upstreamAborted = false;
+  let releaseDelayedResponse = null;
+
+  const origin = http.createServer((req, res) => {
+    lastRequest = {
+      url: req.url,
+      headers: { ...req.headers },
+    };
+    if (req.url === '/api/slow') {
+      req.on('close', () => {
+        if (!res.writableEnded) upstreamAborted = true;
+      });
+      releaseDelayedResponse = () => {
+        if (!res.destroyed) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{}');
+        }
+      };
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json', connection: 'keep-alive', 'keep-alive': 'timeout=5' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({ originBaseUrl: originUrl });
+  const appUrl = await listen(app);
+
+  try {
+    const cleaned = stripHopByHopHeaders({
+      host: 'proxy.test',
+      connection: 'x-hop-secret, keep-alive',
+      'keep-alive': 'timeout=5',
+      'proxy-authorization': 'Basic abc',
+      'x-hop-secret': 'secret',
+      accept: 'application/json',
+    });
+    assert.equal(cleaned.connection, undefined);
+    assert.equal(cleaned['keep-alive'], undefined);
+    assert.equal(cleaned['proxy-authorization'], undefined);
+    assert.equal(cleaned['x-hop-secret'], undefined);
+    assert.equal(cleaned.accept, 'application/json');
+
+    const proxyRes = await httpGetRaw(`${appUrl}/api/listings`, {
+      Connection: 'x-custom-hop',
+      'x-custom-hop': 'strip-me',
+      'x-rpf-forwarded-for': '8.8.8.8',
+    });
+    assert.equal(proxyRes.status, 200);
+    assert.equal(lastRequest.headers['x-custom-hop'], undefined);
+    assert.equal(lastRequest.headers['x-rpf-forwarded-for'], '127.0.0.1');
+
+    const target = new URL(appUrl);
+    await new Promise((resolve) => {
+      const slowReq = http.request({
+        hostname: target.hostname,
+        port: target.port,
+        path: '/api/slow',
+        method: 'GET',
+      });
+      slowReq.on('error', () => {});
+      slowReq.end();
+      setTimeout(() => {
+        slowReq.destroy();
+        setTimeout(resolve, 60);
+      }, 40);
+    });
+
+    assert.equal(upstreamAborted, true);
+  } finally {
+    if (releaseDelayedResponse) releaseDelayedResponse();
+    await close(app);
+    await close(origin);
+  }
+});
+
+test('serves security headers, redirects / to 302 /listings, and supports ETag 304, HEAD, and br/gzip compression', async () => {
+  const rootRedirect = await fetch(`${baseUrl}/`, { redirect: 'manual' });
+  assert.equal(rootRedirect.status, 302);
+  assert.equal(rootRedirect.headers.get('location'), '/listings');
+  assert.equal(rootRedirect.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(rootRedirect.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.equal(rootRedirect.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+  assert.match(rootRedirect.headers.get('content-security-policy'), /default-src 'self'/);
+
+  const rawAsset = await httpGetRaw(`${baseUrl}/assets/listings.js`);
+  assert.equal(rawAsset.status, 200);
+  const etag = rawAsset.headers.etag;
+  assert.ok(etag, 'static assets should emit ETag');
+
+  const notModified = await httpGetRaw(`${baseUrl}/assets/listings.js`, { 'If-None-Match': etag });
+  assert.equal(notModified.status, 304);
+  assert.equal(notModified.body.length, 0);
+
+  const headAsset = await httpGetRaw(`${baseUrl}/assets/listings.js`, {}, 'HEAD');
+  assert.equal(headAsset.status, 200);
+  assert.equal(headAsset.body.length, 0);
+
+  const brListings = await httpGetRaw(`${baseUrl}/listings`, { 'Accept-Encoding': 'br, gzip' });
+  assert.equal(brListings.status, 200);
+  assert.equal(brListings.headers['content-encoding'], 'br');
+  assert.match(zlib.brotliDecompressSync(brListings.body).toString('utf8'), /Remote Party Finder Reborn/);
+
+  const gzListings = await httpGetRaw(`${baseUrl}/listings`, { 'Accept-Encoding': 'gzip' });
+  assert.equal(gzListings.status, 200);
+  assert.equal(gzListings.headers['content-encoding'], 'gzip');
+  assert.match(zlib.gunzipSync(gzListings.body).toString('utf8'), /Remote Party Finder Reborn/);
+
+  const headListings = await httpGetRaw(`${baseUrl}/listings`, {}, 'HEAD');
+  assert.equal(headListings.status, 200);
+  assert.equal(headListings.body.length, 0);
+});
+
+test('webhook uses constant-time auth comparison and rejects oversized payloads with 413', async () => {
+  assert.equal(timingSafeEqualString('secret-1', 'secret-1'), true);
+  assert.equal(timingSafeEqualString('secret-1', 'secret-2'), false);
+  assert.equal(timingSafeEqualString('short', 'much-longer-secret'), false);
+
+  const app = createServer({
+    revisionWebhookSecret: 'webhook-secret',
+    webhookMaxBytes: 64,
+  });
+  const appUrl = await listen(app);
+  try {
+    const oversized = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 100, pad: 'x'.repeat(256) }),
+    }).catch((err) => err);
+
+    if (oversized instanceof Error) {
+      assert.ok(oversized.cause || oversized.message);
+    } else {
+      assert.equal(oversized.status, 413);
+    }
+  } finally {
+    await close(app);
+  }
+});
+
+test('WebSocket enforces allowed Origin, connection cap, and maxPayload limit', async () => {
+  assert.equal(
+    isAllowedWsOrigin(
+      { headers: { host: 'example.test', origin: 'https://example.test' } },
+      { requireOrigin: true },
+    ),
+    true,
+  );
+  assert.equal(
+    isAllowedWsOrigin(
+      { headers: { host: 'example.test', origin: 'https://evil.test' } },
+      { requireOrigin: true },
+    ),
+    false,
+  );
+
+  const app = createServer({
+    maxWsClients: 1,
+    wsMaxPayload: 64,
+    requireWsOrigin: true,
+    allowedWsOrigins: ['http://allowed.test'],
+  });
+  const appUrl = await listen(app);
+  const port = Number(new URL(appUrl).port);
+
+  let ws;
+  try {
+    const rejectedOrigin = await sendRawHttp(
+      port,
+      'GET /api/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://evil.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+    );
+    assert.match(rejectedOrigin, /^HTTP\/1\.1 403 Forbidden/);
+
+    const WebSocketClient = require('ws');
+    ws = new WebSocketClient(appUrl.replace(/^http:/, 'ws:') + '/api/ws', {
+      headers: { Origin: 'http://allowed.test' },
+    });
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+
+    const overCapacity = await sendRawHttp(
+      port,
+      'GET /api/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://allowed.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+    );
+    assert.match(overCapacity, /^HTTP\/1\.1 503 Service Unavailable/);
+
+    const closedPromise = new Promise((resolve) => {
+      ws.once('close', (code) => resolve(code));
+    });
+    ws.send(JSON.stringify({ type: 'subscribe', channel: 'listing_changes', pad: 'x'.repeat(200) }));
+    const closeCode = await closedPromise;
+    assert.equal(closeCode, 1009);
+  } finally {
+    if (ws && ws.readyState < 2) ws.terminate();
+    await close(app);
+  }
+});
+
+test('proxy strips spoofed relay secret, forwards configured secret, and honors trustProxy for client IP', async () => {
+  let lastHeaders = null;
+  const origin = http.createServer((req, res) => {
+    lastHeaders = { ...req.headers };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const originUrl = await listen(origin);
+
+  const untrustedProxyApp = createServer({
+    originBaseUrl: originUrl,
+    revisionWebhookSecret: 'webhook-fallback-secret',
+    trustProxy: false,
+  });
+  const untrustedUrl = await listen(untrustedProxyApp);
+
+  const trustedProxyApp = createServer({
+    originBaseUrl: originUrl,
+    revisionWebhookSecret: 'webhook-fallback-secret',
+    originRelaySecret: 'explicit-relay-secret',
+    trustProxy: true,
+  });
+  const trustedUrl = await listen(trustedProxyApp);
+
+  try {
+    const resUntrusted = await httpGetRaw(`${untrustedUrl}/contribute/fflogs/jobs`, {
+      'x-rpf-relay-secret': 'attacker-spoof',
+      'x-envoy-external-address': '198.51.100.42',
+      'x-forwarded-for': '203.0.113.99',
+    });
+    assert.equal(resUntrusted.status, 200);
+    assert.equal(lastHeaders['x-rpf-relay-secret'], 'webhook-fallback-secret');
+    assert.equal(lastHeaders['x-rpf-forwarded-for'], '127.0.0.1');
+
+    const resTrustedEnvoy = await httpGetRaw(`${trustedUrl}/contribute/multiple`, {
+      'x-rpf-relay-secret': 'attacker-spoof',
+      'x-envoy-external-address': '::ffff:198.51.100.42',
+      'x-forwarded-for': '203.0.113.99, 10.0.0.1',
+    });
+    assert.equal(resTrustedEnvoy.status, 200);
+    assert.equal(lastHeaders['x-rpf-relay-secret'], 'explicit-relay-secret');
+    assert.equal(lastHeaders['x-rpf-forwarded-for'], '198.51.100.42');
+
+    const resTrustedXff = await httpGetRaw(`${trustedUrl}/contribute/multiple`, {
+      'x-forwarded-for': 'not-an-ip, 203.0.113.77, 10.0.0.2',
+    });
+    assert.equal(resTrustedXff.status, 200);
+    assert.equal(lastHeaders['x-rpf-forwarded-for'], '203.0.113.77');
+  } finally {
+    await close(trustedProxyApp);
+    await close(untrustedProxyApp);
+    await close(origin);
   }
 });

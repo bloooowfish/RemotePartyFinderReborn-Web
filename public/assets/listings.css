@@ -1,36 +1,129 @@
 #container {
-    margin: 0 1em;
+    margin: 0;
 }
 
-/* Pico의 .container max-width를 늘려 리스팅 폭 확보 */
-body > div.container {
-    max-width: 1400px;
+/* Align header, main, and footer widths consistently */
+body > header > nav.container,
+body > main.container,
+body > div.container,
+body > footer.container {
+    max-width: 1280px;
+}
+
+.listings-title {
+    margin: 0.2rem 0 0.65rem;
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--text);
 }
 
 /* =============================================================================
    Material Design Filters
    ============================================================================= */
 
-/* Card Container */
+.advanced-filters-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.65rem;
+}
+
+.advanced-filters-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: auto;
+    margin: 0;
+    padding: 0.38rem 0.85rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background-color: rgba(30, 33, 36, 0.92);
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.advanced-filters-toggle:hover {
+    border-color: var(--primary);
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.advanced-toggle-chevron {
+    display: inline-block;
+    transition: transform 0.18s ease;
+}
+
+.advanced-filters-toggle[aria-expanded="true"] .advanced-toggle-chevron {
+    transform: rotate(90deg);
+}
+
+.active-filters-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.4em;
+    padding: 0.08em 0.48em;
+    border-radius: 999px;
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    font-size: 0.78em;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.active-filters-badge[hidden],
+.reset-filters-btn[hidden],
+.pagination-controls[hidden] {
+    display: none !important;
+}
+
+.reset-filters-btn {
+    width: auto;
+    margin: 0;
+    padding: 0.35rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background-color: transparent;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.reset-filters-btn:hover {
+    border-color: var(--primary);
+    background-color: rgba(255, 255, 255, 0.07);
+}
+
 /* Card Container */
 .material-card {
     background-color: rgba(30, 33, 36, 0.95);
-    /* 아주 어둡고 불투명에 가까운 배경으로 가독성 확보 */
     border-radius: 12px;
-    padding: 1.2rem;
+    padding: 1.15rem;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 1.5rem;
-    margin-top: 1rem;
-    border: 1px solid var(--muted-border-color);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+    margin-top: 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
-/* 필터 카드(상세 설정)는 너무 넓지 않게 */
+/* Align filter card cleanly with #container */
 .filter-card.material-card {
-    max-width: 1000px;
-    margin-left: auto;
-    margin-right: auto;
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.filter-card.material-card.collapsed {
+    display: none;
 }
 
 @media (max-width: 50em) {
@@ -39,19 +132,21 @@ body > div.container {
     }
 }
 
+.filter-section h2.filter-heading,
 .filter-section h4 {
     margin: 0 0 0.5rem 0;
     font-size: 0.8em;
-    color: var(--meta-text);
+    color: #c2c8d0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 600;
 }
 
-/* 섹션 간 시각적 구분 */
+/* Section accent */
 .filter-section {
     padding-left: 0.75rem;
     border-left: 3px solid var(--primary);
+    min-width: 0;
 }
 
 /* Chip Styles */
@@ -66,24 +161,34 @@ body > div.container {
     align-items: center;
     padding: 0.3rem 0.8rem;
     border-radius: 8px;
-    border: 1px solid var(--muted-border-color);
-    background-color: transparent;
-    color: var(--text);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    background-color: rgba(255, 255, 255, 0.04);
+    color: #e4e8ee;
     font-size: 0.85em;
     cursor: pointer;
     transition: all 0.2s ease;
     user-select: none;
+    max-width: 100%;
 }
 
 .chip:hover {
-    background-color: rgba(255, 255, 255, 0.05);
-    border-color: var(--text-muted);
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--primary);
 }
 
-/* Hide Checkboxes */
+/* Accessible visually hidden checkboxes (.sr-only pattern) */
 .chip-group input[type="checkbox"],
 .role-group input[type="checkbox"] {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
 }
 
 /* Selected Chip State */
@@ -98,53 +203,84 @@ body > div.container {
 .roles {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.55rem;
 }
 
 .role-group {
     display: flex;
     align-items: center;
-    gap: 0.8rem;
+    gap: 0.65rem;
+    flex-wrap: wrap;
 }
 
-.role-group small {
-    display: none;
-    /* Hide role labels text */
+.role-group .role-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-width: 7.4rem;
+    margin: 0;
+    padding: 0.24rem 0.55rem;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #d6dce4;
+    font-size: 0.76rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.role-group .role-group-toggle:hover {
+    border-color: var(--primary);
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.role-group .role-group-toggle.partial {
+    border-color: var(--primary);
+    color: var(--text);
+}
+
+.role-group .role-group-toggle.active {
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    border-color: var(--primary);
 }
 
 /* Role Icons */
 .role-group .jobs {
     display: flex;
-    gap: 0.3rem;
+    flex-wrap: wrap;
+    gap: 0.35rem;
 }
 
 .role-group label {
-    width: 1.8rem;
-    height: 1.8rem;
-    border: 1px solid transparent;
-    /* No border by default */
-    border-radius: 4px;
+    width: 1.95rem;
+    height: 1.95rem;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 5px;
     padding: 2px;
     cursor: pointer;
-    opacity: 0.5;
-    /* Dimmed when unselected */
+    opacity: 0.85;
     transition: all 0.2s;
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: rgba(255, 255, 255, 0.02);
+    background-color: rgba(255, 255, 255, 0.05);
 }
 
 .role-group label:hover {
-    opacity: 0.8;
-    background-color: rgba(255, 255, 255, 0.1);
+    opacity: 1;
+    border-color: rgba(255, 255, 255, 0.45);
+    background-color: rgba(255, 255, 255, 0.12);
 }
 
 /* Active Roles */
 .role-group input:checked+label {
     opacity: 1;
-    /* Glow effect instead of border */
-    background-color: rgba(255, 255, 255, 0.15);
+    border-color: var(--primary);
+    background-color: rgba(255, 255, 255, 0.18);
     box-shadow: 0 0 0 1px currentColor;
 }
 
@@ -168,21 +304,45 @@ body > div.container {
 }
 
 /* =============================================================================
-   Listing Layout (Restored)
+   Listing Layout
    ============================================================================= */
 
 .js #listings {
     border-top: 2px dashed var(--text);
-    margin-top: 1em;
+    margin-top: 0.85em;
 }
 
 #container>.settings>.controls {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
 }
 
 #container>.settings>.controls>.search {
-    margin-right: 1em;
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#data-centre-filter {
+    margin: 0;
+    width: auto;
+    min-width: 11.5rem;
+    flex: 0 0 auto;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    padding-right: 2.25rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23b5bcc4'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.65rem center;
+    background-size: 1.15rem 1.15rem;
+}
+
+#data-centre-filter::picker-icon,
+select::picker-icon {
+    display: none;
 }
 
 #container.server-unavailable>.settings,
@@ -206,8 +366,8 @@ body > div.container {
     display: grid;
     grid-template-columns: minmax(0, 3fr) auto minmax(0, 2.5fr);
     gap: 1em;
-    margin: 0 -1em;
-    padding: 1em;
+    margin: 0;
+    padding: 1em 0.75em;
 }
 
 #listings>.listing.listing-alliance-wide>.members-list.alliance {
@@ -313,6 +473,10 @@ body > div.container {
     width: 2em;
     height: 2em;
     border: 1px solid currentColor;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
 }
 
 #listings>.listing .party .slot:not(.filled).dps.tank {
@@ -362,6 +526,13 @@ body > div.container {
     fill: var(--icon-gold);
 }
 
+#listings>.listing .party .slot>svg.slot-role-icon {
+    width: 84%;
+    height: 84%;
+    display: block;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+
 #listings>.listing .party .slot.filled:not(.dps):not(.healer):not(.tank)>svg {
     fill: #C6C6C6;
 }
@@ -373,8 +544,42 @@ body > div.container {
         padding: 1rem;
     }
 
+    #container>.settings>.controls {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    #container>.settings>.controls>.search {
+        flex: 1 1 100%;
+    }
+
+    #data-centre-filter {
+        width: 100%;
+        min-width: 0;
+    }
+
     #listings>.listing {
         grid-template-columns: 1fr;
+    }
+
+    #listings>.listing .meta {
+        margin-left: 0;
+        text-align: left;
+    }
+
+    #listings>.listing .meta>.item {
+        justify-content: flex-start;
+    }
+
+    #listings>.listing .party>.party-slots {
+        grid-template-columns: repeat(8, minmax(1.65rem, 1.9rem));
+        gap: 0.28em;
+    }
+
+    .role-group {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
     }
 
     .role-group label {
@@ -488,12 +693,16 @@ body > div.container {
     min-width: 0;
     justify-content: flex-end;
     align-self: center;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 #listings>.listing .members-list .fflogs-link {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    white-space: nowrap;
+    flex-shrink: 0;
     min-width: 2.3em;
     height: 1.55em;
     padding: 0 0.28em;
@@ -770,11 +979,14 @@ body > div.container {
     color: #ffffff;
 }
 
-/* Parse가 없는 경우 */
+/* Quiet em-dash for members with no log data */
 .parse-none {
     background-color: transparent;
     color: var(--meta-text);
-    border: 1px dashed var(--meta-text);
+    border: none;
+    opacity: 0.65;
+    min-width: 1.4em;
+    text-align: center;
 }
 
 /* Parse가 Hidden인 경우 */
@@ -934,6 +1146,9 @@ body > div.container {
 #listings>.listing .members-list.alliance li.member-row .member-link-slot {
     grid-area: link;
     align-self: center;
+    white-space: nowrap;
+    flex-shrink: 0;
+    justify-self: end;
 }
 
 @media (max-width: 80em) {
@@ -1159,7 +1374,8 @@ body > div.container {
     position: absolute;
     top: 100%;
     left: 0;
-    width: 500px;
+    width: min(500px, calc(100vw - 2rem));
+    max-width: 100%;
     max-height: 300px;
     background-color: #1a1d21;
     border: 1px solid var(--muted-border-color);
@@ -1345,6 +1561,10 @@ body > div.container {
    Focus Visible 스타일 (접근성)
    ============================================================================= */
 
+/* Keyboard focus rings */
+.advanced-filters-toggle:focus-visible,
+.reset-filters-btn:focus-visible,
+.role-group .role-group-toggle:focus-visible,
 .chip:focus-visible,
 .role-group label:focus-visible,
 .pagination li a:focus-visible,
@@ -1357,8 +1577,9 @@ body > div.container {
     outline-offset: 2px;
 }
 
-/* role-group label이 키보드로 선택 가능하도록 tabindex 지원 */
-.role-group input:focus-visible+label {
+/* Keyboard focus ring on visually-hidden role/chip checkboxes */
+.role-group input:focus-visible+label,
+.chip-group input:focus-visible+.chip {
     outline: 2px solid var(--primary);
     outline-offset: 2px;
 }

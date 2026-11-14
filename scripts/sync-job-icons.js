@@ -74,15 +74,46 @@ function escapeXml(value) {
   })[character]);
 }
 
+const CRITICAL_PNG_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function stripPngMetadata(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    return buffer;
+  }
+
+  const parts = [buffer.subarray(0, 8)];
+  let offset = 8;
+
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const totalChunkLength = 12 + length;
+    if (offset + totalChunkLength > buffer.length) {
+      return buffer;
+    }
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    if (CRITICAL_PNG_CHUNKS.has(type)) {
+      parts.push(buffer.subarray(offset, offset + totalChunkLength));
+    }
+    offset += totalChunkLength;
+    if (type === 'IEND') break;
+  }
+
+  return Buffer.concat(parts);
+}
+
 function placeholderSymbol({ code, name }) {
   return `    <symbol id="${code}" viewBox="0 0 84 84" aria-label="${escapeXml(`${name} icon placeholder`)}">
-        <circle cx="42" cy="42" r="38" fill="#28313d" stroke="#8391a3" stroke-width="3"/>
-        <g fill="#d9e1eb">
-            <ellipse cx="42" cy="51" rx="14" ry="11"/>
-            <ellipse cx="24" cy="38" rx="6" ry="8" transform="rotate(-18 24 38)"/>
-            <ellipse cx="36" cy="31" rx="6" ry="8" transform="rotate(-7 36 31)"/>
-            <ellipse cx="49" cy="31" rx="6" ry="8" transform="rotate(7 49 31)"/>
-            <ellipse cx="61" cy="38" rx="6" ry="8" transform="rotate(18 61 38)"/>
+        <rect x="4" y="4" width="76" height="76" rx="14" fill="#2a1f3d" stroke="#c5ab70" stroke-width="3.5"/>
+        <rect x="7" y="7" width="70" height="70" rx="11" fill="#3a2956"/>
+        <path d="M7 42 h70 v24 a11 11 0 0 1 -11 11 h-48 a11 11 0 0 1 -11 -11 z" fill="#241938"/>
+        <rect x="9.5" y="9.5" width="65" height="65" rx="9" fill="none" stroke="#856f42" stroke-width="1.25"/>
+        <g fill="#f4efe4">
+            <ellipse cx="42" cy="52" rx="13.5" ry="10.5"/>
+            <ellipse cx="23.5" cy="39" rx="5.5" ry="7.8" transform="rotate(-18 23.5 39)"/>
+            <ellipse cx="35.5" cy="31.5" rx="5.5" ry="7.8" transform="rotate(-7 35.5 31.5)"/>
+            <ellipse cx="48.5" cy="31.5" rx="5.5" ry="7.8" transform="rotate(7 48.5 31.5)"/>
+            <ellipse cx="60.5" cy="39" rx="5.5" ry="7.8" transform="rotate(18 60.5 39)"/>
         </g>
     </symbol>`;
 }
@@ -94,6 +125,7 @@ async function imageSymbol(job) {
   } catch (error) {
     throw new Error(`${job.code}: icon download failed (${job.imageUrl}): ${error.message}`);
   }
+  image = stripPngMetadata(image);
   const { width, height } = readPngDimensions(image);
   const base64 = image.toString('base64');
   return `    <symbol id="${job.code}" viewBox="0 0 ${width} ${height}" aria-label="${escapeXml(job.name)}">

@@ -52,6 +52,12 @@
     }
 
     function setUpLanguage() {
+        for (const trigger of document.querySelectorAll('nav a[aria-haspopup="listbox"]')) {
+            trigger.addEventListener('click', (event) => {
+                event.preventDefault();
+            });
+        }
+
         let language = document.getElementById('language');
         if (!language) return;
 

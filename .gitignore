@@ -5,3 +5,5 @@ node_modules/
 coverage/
 npm-debug.log*
 docs/
+public/**/*.br
+public/**/*.gz

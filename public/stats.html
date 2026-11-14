@@ -7,37 +7,46 @@
     <title>remote party finder reborn - stats</title>
     <link rel="stylesheet" href="/assets/minireset.css" />
     <link rel="stylesheet" href="/assets/pico.css" />
-    <link rel="stylesheet" href="/assets/common.css?v=2" />
+    <link rel="stylesheet" href="/assets/minireset.css" />
+    <link rel="stylesheet" href="/assets/pico.css" />
+    <link rel="stylesheet" href="/assets/common.css" />
     <link rel="stylesheet" href="/assets/stats.css" />
-    <script defer src="/assets/common.js?v=3"></script>
+    <script defer src="/assets/common.js"></script>
     <script defer src="/assets/stats-edge.js"></script>
 </head>
 
 <body>
-    <nav class="container">
-        <ul>
-            <li><strong><a href="/" class="contrast">Remote Party Finder Reborn</a></strong></li>
-        </ul>
-        <ul>
-            <li role="list" dir="rtl">
-                <a href="javascript:void(0)" aria-haspopup="listbox">Stats</a>
-                <ul role="listbox">
-                    <li><a href="/stats">All Time</a></li>
-                    <li><a href="/stats/7days">7 Days</a></li>
-                </ul>
-            </li>
-            <li role="list" dir="rtl">
-                <a href="javascript:void(0)" aria-haspopup="listbox" style="text-transform: capitalize;">English</a>
-                <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="en">
-                    <li><a href="javascript:void(0)" data-value="en">English</a></li>
-                    <li><a href="javascript:void(0)" data-value="ja">日本語</a></li>
-                    <li><a href="javascript:void(0)" data-value="de">Deutsch</a></li>
-                    <li><a href="javascript:void(0)" data-value="fr">Français</a></li>
-                </ul>
-            </li>
-        </ul>
-    </nav>
+    <header>
+        <nav class="container">
+            <ul>
+                <li><strong><a href="/listings" class="contrast">Remote Party Finder Reborn</a></strong></li>
+            </ul>
+            <ul>
+                <li role="list" dir="rtl">
+                    <a href="#stats" aria-haspopup="listbox" data-stats-i18n="nav_stats">Stats</a>
+                    <ul role="listbox">
+                        <li><a href="/stats" data-stats-i18n="nav_all_time">All Time</a></li>
+                        <li><a href="/stats/7days" data-stats-i18n="nav_7days">7 Days</a></li>
+                    </ul>
+                </li>
+                <li role="list" dir="rtl">
+                    <a href="#language" aria-haspopup="listbox" style="text-transform: capitalize;">English</a>
+                    <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="en">
+                        <li><a href="#lang-en" data-value="en">English</a></li>
+                        <li><a href="#lang-ja" data-value="ja">日本語</a></li>
+                        <li><a href="#lang-de" data-value="de">Deutsch</a></li>
+                        <li><a href="#lang-fr" data-value="fr">Français</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </nav>
+    </header>
     <main class="container">
+        <h1 class="stats-page-title" id="stats-page-title">Party Finder Statistics</h1>
+        <div id="stats-loading" class="stats-state stats-loading" role="status" aria-live="polite">
+            <strong id="stats-loading-title">Loading statistics...</strong>
+            <span id="stats-loading-body">Fetching party finder activity data.</span>
+        </div>
         <div id="stats-error" class="stats-state" role="alert" style="display:none;">
             <strong id="stats-error-title">Stats are temporarily unavailable</strong>
             <span id="stats-error-body">The statistics service could not be reached. Try refreshing in a moment.</span>
@@ -47,65 +56,65 @@
             <span id="stats-empty-body">Once listing data is collected, category, host, hour, and day trends will appear here.</span>
         </div>
         <div id="stats-content" style="display:none;">
-            <div class="total">
+            <div class="total" id="stats-total-text">
                 Stats for <span id="stats-total">0</span> listings
             </div>
 
             <div class="chart-containers">
-                <div class="container">
-                    <h1>Top categories</h1>
+                <section class="container">
+                    <h2 data-stats-i18n="top_categories">Top categories</h2>
                     <div id="dutiesChart" class="chart"></div>
                     <details>
-                        <summary>Details</summary>
+                        <summary data-stats-i18n="details">Details</summary>
                         <table id="duties">
-                            <thead><tr><th>Duty</th><th>Count</th></tr></thead>
+                            <thead><tr><th data-stats-i18n="th_duty">Duty</th><th data-stats-i18n="th_count">Count</th></tr></thead>
                             <tbody></tbody>
                         </table>
                     </details>
-                </div>
+                </section>
 
-                <div class="container">
-                    <h1>Top hosts</h1>
+                <section class="container">
+                    <h2 data-stats-i18n="top_hosts">Top hosts</h2>
                     <div id="hostsChart" class="chart"></div>
                     <details>
-                        <summary>Details</summary>
+                        <summary data-stats-i18n="details">Details</summary>
                         <table id="hosts">
-                            <thead><tr><th>World (created)</th><th>Name</th><th>Count</th></tr></thead>
+                            <thead><tr><th data-stats-i18n="th_world">World (created)</th><th data-stats-i18n="th_name">Name</th><th data-stats-i18n="th_count">Count</th></tr></thead>
                             <tbody></tbody>
                         </table>
                     </details>
-                </div>
+                </section>
 
-                <div class="container">
-                    <h1>Top hours (UTC)</h1>
+                <section class="container">
+                    <h2 data-stats-i18n="top_hours">Top hours (UTC)</h2>
                     <div id="hoursChart" class="chart"></div>
                     <details>
-                        <summary>Details</summary>
+                        <summary data-stats-i18n="details">Details</summary>
                         <table id="hours">
-                            <thead><tr><th>Hour</th><th>Count</th></tr></thead>
+                            <thead><tr><th data-stats-i18n="th_hour">Hour</th><th data-stats-i18n="th_count">Count</th></tr></thead>
                             <tbody></tbody>
                         </table>
                     </details>
-                </div>
+                </section>
 
-                <div class="container">
-                    <h1>Top days (UTC)</h1>
+                <section class="container">
+                    <h2 data-stats-i18n="top_days">Top days (UTC)</h2>
                     <div id="daysChart" class="chart"></div>
                     <details>
-                        <summary>Details</summary>
+                        <summary data-stats-i18n="details">Details</summary>
                         <table id="days">
-                            <thead><tr><th>Name</th><th>Count</th></tr></thead>
+                            <thead><tr><th data-stats-i18n="th_name">Name</th><th data-stats-i18n="th_count">Count</th></tr></thead>
                             <tbody></tbody>
                         </table>
                     </details>
-                </div>
+                </section>
             </div>
         </div>
     </main>
     <footer class="container"
         style="text-align: center; padding: 2rem 0; font-size: 0.85em; color: var(--muted-color);">
-        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank">lojewalo</a> &amp; <a
-            href="https://ko-fi.com/zeroeightsix" target="_blank">zeroeightsix</a>
+        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank" rel="noopener noreferrer">lojewalo</a> &amp; <a
+            href="https://ko-fi.com/zeroeightsix" target="_blank" rel="noopener noreferrer">zeroeightsix</a>
     </footer>
 </body>
 

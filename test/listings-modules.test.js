@@ -477,3 +477,90 @@ test('source phase progress text is escaped in content and title for the chosen 
     '<span class="tag tag-phase" title="P2 48% &lt;done&gt; &amp; more">P2 48% &lt;done&gt; &amp; more</span>',
   );
 });
+
+
+test('chaotic 24-man listings (num_parties >= 1) match role filters across open slots', () => {
+  const chaoticListing = {
+    listing: {
+      high_end: true,
+      num_parties: 3,
+      data_centre: 'Mana',
+      jobs_present: [19, 24],
+      slots: [
+        { accepting: 2, filled: false }, // PLD open
+        { accepting: 8, filled: false }, // WHM open
+      ],
+      joinable_roles: '10', // PLD(2) | WHM(8)
+    },
+  };
+
+  const baseFilters = {
+    centre: 'All',
+    objectives: 0,
+    conditions: 0,
+    onePlayerPerJob: false,
+    minItemLevel: 0,
+    contentTypes: [],
+    selectedContents: [],
+    searchQuery: '',
+  };
+
+  assert.equal(matchesListingFilters(chaoticListing, { ...baseFilters, roles: 2n }), true);
+  assert.equal(matchesListingFilters(chaoticListing, { ...baseFilters, roles: 8n }), true);
+  assert.equal(matchesListingFilters(chaoticListing, { ...baseFilters, roles: 16n }), false);
+});
+
+test('open party slots render role SVG icons and zero min_item_level renders as em-dash', () => {
+  const renderer = rendererWithTranslations({
+    min_il_short: 'Min IL',
+  });
+
+  const html = renderer.renderListingCard({
+    time_left_seconds: 60,
+    updated_at_timestamp: 0,
+    listing: {
+      creator_name: 'Tester',
+      data_centre: 'Mana',
+      high_end: true,
+      home_world: { name: 'Ixion' },
+      min_item_level: 0,
+      slot_count: 8,
+      slots_filled_count: 1,
+      display_slots: [
+        { filled: true, icon_code: 'PLD', role_class: 'tank', title: 'Paladin' },
+        { filled: false, role_class: 'tank', title: 'Any Tank' },
+        { filled: false, role_class: 'healer', title: 'Any Healer' },
+        { filled: false, role_class: 'dps', title: 'Any DPS' },
+        { filled: false, role_class: 'tank healer', title: 'Tank or Healer' },
+        { filled: false, role_class: 'dps tank', title: 'Tank or DPS' },
+        { filled: false, role_class: 'empty', title: 'Free Role' },
+        { filled: false, role_class: '', title: '' },
+      ],
+      members: [
+        {
+          name: 'Tester',
+          home_world: { name: 'Ixion' },
+          job_code: 'PLD',
+          job_id: 19,
+          role_class: 'tank',
+          party_index: 0,
+          slot_index: 0,
+          parse: {},
+        },
+      ],
+    },
+  });
+
+  assert.match(html, /class="slot-role-icon"/);
+  assert.doesNotMatch(html, /ROLE_FREE/);
+  assert.match(html, /data-slot-index="1"[\s\S]*?<svg class="slot-role-icon" viewBox="0 0 56 56" aria-hidden="true"><use href="\/assets\/role-icons\.svg#ROLE_TANK"><\/use><\/svg>/);
+  assert.match(html, /data-slot-index="2"[\s\S]*?<use href="\/assets\/role-icons\.svg#ROLE_HEALER"><\/use>/);
+  assert.match(html, /data-slot-index="3"[\s\S]*?<use href="\/assets\/role-icons\.svg#ROLE_DPS"><\/use>/);
+  assert.match(html, /<div class="slot tank healer" data-slot-index="4" title="Tank or Healer"><\/div>/);
+  assert.match(html, /<div class="slot dps tank" data-slot-index="5" title="Tank or DPS"><\/div>/);
+  assert.match(html, /<div class="slot empty" data-slot-index="6" title="Free Role"><\/div>/);
+  assert.match(html, /<div class="slot" data-slot-index="7" title=""><\/div>/);
+  assert.match(html, /Min IL[\s\S]*?<div class="value">—<\/div>/);
+  assert.doesNotMatch(html, /parse-none">--<\/span>/);
+  assert.match(html, /parse-none"[^>]*>—<\/span>/);
+});

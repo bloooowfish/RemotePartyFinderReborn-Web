@@ -9,7 +9,7 @@
     --meta-text: #D3EEE9;
     --ui-text: #EEE1C5;
     --text-bright: #FFF;
-    --font-family: sans-serif;
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
 
     --row-background: #2C2F34;
     --row-background-alternate: #373A3E;
@@ -59,4 +59,23 @@ details {
 
 details>summary {
     cursor: pointer;
+}
+
+nav li a,
+nav details[role="list"] summary,
+nav [role="list"] [role="listbox"] a {
+    white-space: nowrap;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
 }

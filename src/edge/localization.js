@@ -1,5 +1,7 @@
 const LOCALIZED_HTML_VARY = 'Accept-Language, Cookie';
 
+const SUPPORTED_LANGUAGES = ['en', 'ja', 'de', 'fr'];
+
 const SERVICE_UNAVAILABLE = {
   en: 'The Remote Party Finder Reborn server is temporarily unavailable. Please try again later.',
   ja: 'Remote Party Finder Reborn サーバーは一時的に利用できません。しばらくしてからもう一度お試しください。',
@@ -90,24 +92,48 @@ function sendOriginUnavailable(req, res, options = {}) {
   }
 }
 
-function localizeHtml(req, html) {
-  const lang = pickLanguage(req);
-  const name = LANGUAGE_NAMES[lang] || LANGUAGE_NAMES.en;
+function localizeHtmlForLanguage(lang, html, assetVersions = null) {
+  const safeLang = LANGUAGE_NAMES[lang] ? lang : 'en';
+  const name = LANGUAGE_NAMES[safeLang];
 
-  return html
-    .replace(/<html lang="[^"]*"/, `<html lang="${lang}"`)
-    .replace(/id="language" data-accept="[^"]*"/, `id="language" data-accept="${lang}"`)
+  let localized = html
+    .replace(/<html lang="[^"]*"/, `<html lang="${safeLang}"`)
+    .replace(/id="language" data-accept="[^"]*"/, `id="language" data-accept="${safeLang}"`)
     .replace(
-      /(<a href="javascript:void\(0\)" aria-haspopup="listbox"[^>]*>)[^<]*(<\/a>\s*<ul role="listbox" aria-haspopup="listbox" id="language")/,
+      /(<a\b[^>]*aria-haspopup="listbox"[^>]*>)[^<]*(<\/a>\s*<ul role="listbox" aria-haspopup="listbox" id="language")/,
       `$1${name}$2`,
+    )
+    .replace(
+      /\/assets\/listing-data(?:\.(?:en|ja|de|fr))?\.js(?:\?v=[^"'#\s]+)?/g,
+      `/assets/listing-data.${safeLang}.js`,
     );
+
+  if (assetVersions && assetVersions.size > 0) {
+    localized = localized.replace(
+      /\b(src|href)="(\/assets\/[^"?#]+)(?:\?v=[^"#]*)?(#[^"]*)?"/g,
+      (full, attr, pathname, fragment = '') => {
+        const version = assetVersions.get(pathname);
+        if (!version) return full;
+        return `${attr}="${pathname}?v=${version}${fragment}"`;
+      },
+    );
+  }
+
+  return localized;
+}
+
+function localizeHtml(req, html, assetVersions = null) {
+  return localizeHtmlForLanguage(pickLanguage(req), html, assetVersions);
 }
 
 module.exports = {
+  LANGUAGE_NAMES,
   LOCALIZED_HTML_VARY,
   SERVICE_UNAVAILABLE,
+  SUPPORTED_LANGUAGES,
   escapeHtml,
   localizeHtml,
+  localizeHtmlForLanguage,
   pickLanguage,
   sendOriginUnavailable,
 };

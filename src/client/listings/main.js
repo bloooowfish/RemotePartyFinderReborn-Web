@@ -69,9 +69,27 @@
         },
         min_il_short: {
             en: 'Min IL',
-            ja: '平均IL',
+            ja: '下限IL',
             de: 'Min. GS',
             fr: 'NvObj min.',
+        },
+        listings_heading: {
+            en: 'Party Finder Listings',
+            ja: 'パーティ募集一覧',
+            de: 'Gruppensuche',
+            fr: 'Recherche de groupe',
+        },
+        reset_filters: {
+            en: 'Reset Filters',
+            ja: 'フィルターをリセット',
+            de: 'Filter zurücksetzen',
+            fr: 'Réinitialiser les filtres',
+        },
+        search_duties: {
+            en: 'Search duties...',
+            ja: 'コンテンツを検索...',
+            de: 'Inhalte suchen...',
+            fr: 'Rechercher une mission...',
         },
         members_count: {
             en: 'Members ({count})',
@@ -576,7 +594,71 @@
             minILInput.value = state.minItemLevel || 0;
         }
 
+        updateFilterControlsUi();
         persistState();
+    }
+
+    function countActiveAdvancedFilters() {
+        let count = 0;
+        let rolesBits = state.roles;
+        while (rolesBits > 0n) {
+            if ((rolesBits & 1n) !== 0n) count += 1;
+            rolesBits >>= 1n;
+        }
+        for (const bit of [2, 4, 8]) {
+            if ((state.objectives & bit) !== 0) count += 1;
+            if ((state.conditions & bit) !== 0) count += 1;
+        }
+        if (state.onePlayerPerJob) count += 1;
+        if (Number(state.minItemLevel) > 0) count += 1;
+        count += state.contentTypes.length;
+        count += state.selectedContents.length;
+        return count;
+    }
+
+    function hasActiveAdvancedFilters() {
+        return countActiveAdvancedFilters() > 0;
+    }
+
+    function setAdvancedFiltersExpanded(expanded) {
+        const panel = document.getElementById('advanced-filters-panel');
+        const toggle = document.getElementById('advanced-filters-toggle');
+        if (panel) {
+            panel.classList.toggle('collapsed', !expanded);
+        }
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', String(Boolean(expanded)));
+        }
+    }
+
+    function updateFilterControlsUi() {
+        const activeCount = countActiveAdvancedFilters();
+        const badge = document.getElementById('active-filters-badge');
+        if (badge) {
+            badge.hidden = activeCount === 0;
+            badge.textContent = String(activeCount);
+        }
+
+        const hasAnyFilter = activeCount > 0
+            || Boolean(state.searchQuery)
+            || state.centre !== 'All';
+        const resetBtn = document.getElementById('reset-filters-btn');
+        if (resetBtn) {
+            resetBtn.hidden = !hasAnyFilter;
+        }
+
+        const roleGroups = document.querySelectorAll('#role-filter .role-group');
+        for (const group of roleGroups) {
+            const btn = group.querySelector('.role-group-toggle');
+            if (!btn) continue;
+            const inputs = [...group.querySelectorAll('input[type="checkbox"]')];
+            const checkedCount = inputs.filter((input) => input.checked).length;
+            const allChecked = inputs.length > 0 && checkedCount === inputs.length;
+            const someChecked = checkedCount > 0 && !allChecked;
+            btn.setAttribute('aria-pressed', String(allChecked));
+            btn.classList.toggle('active', allChecked);
+            btn.classList.toggle('partial', someChecked);
+        }
     }
 
     function applyTranslations() {
@@ -588,6 +670,11 @@
         const searchInput = document.querySelector('#container .search');
         if (searchInput) {
             searchInput.placeholder = translate('search', 'Search...');
+        }
+
+        const dutySearchInput = document.getElementById('content-select-search');
+        if (dutySearchInput) {
+            dutySearchInput.placeholder = translate('search_duties', 'Search duties...');
         }
     }
 
@@ -742,9 +829,15 @@
         const next = document.querySelector('.page-btn.next');
         if (!pagination || !prev || !next) return;
 
+        const controls = pagination.closest('.pagination-controls');
         const totalPages = Math.max(1, Math.ceil(state.filteredListings.length / state.pageSize));
         const currentPage = Math.min(state.page, totalPages);
         state.page = currentPage;
+
+        if (controls) {
+            controls.hidden = totalPages <= 1;
+            controls.style.display = totalPages <= 1 ? 'none' : '';
+        }
 
         prev.classList.toggle('disabled', currentPage <= 1);
         next.classList.toggle('disabled', currentPage >= totalPages);
@@ -752,11 +845,11 @@
         const items = paginationModel(totalPages, currentPage)
             .map((page) => {
                 if (page === ELLIPSIS) {
-                    return '<li class="disabled"><a href="javascript:void(0)">...</a></li>';
+                    return '<li class="disabled"><a href="#listings" tabindex="-1" aria-disabled="true">...</a></li>';
                 }
 
                 const active = page === currentPage ? ' class="active"' : '';
-                return `<li${active}><a href="javascript:void(0)" data-page="${page}">${page}</a></li>`;
+                return `<li${active}><a href="#listings" data-page="${page}">${page}</a></li>`;
             })
             .join('');
 
@@ -793,6 +886,18 @@
         }
     }
 
+    function filterContentSelectItems() {
+        const listEl = document.getElementById('content-select-list');
+        const searchEl = document.getElementById('content-select-search');
+        if (!listEl) return;
+
+        const query = (searchEl?.value || '').trim().toLowerCase();
+        for (const item of listEl.querySelectorAll('.content-select-item')) {
+            const labelText = item.textContent.trim().toLowerCase();
+            item.classList.toggle('hidden', Boolean(query) && !labelText.includes(query));
+        }
+    }
+
     function renderContentSelectOptions() {
         const listEl = document.getElementById('content-select-list');
         if (!listEl) return;
@@ -809,6 +914,8 @@
             `;
             listEl.appendChild(item);
         }
+
+        filterContentSelectItems();
     }
 
     function updateEmptyStates(totalListings, filteredListings) {
@@ -974,6 +1081,7 @@
         state.filteredListings = getListings().filter(listingMatchesFilters);
         const totalPages = Math.max(1, Math.ceil(state.filteredListings.length / state.pageSize));
         state.page = Math.min(Math.max(1, state.page), totalPages);
+        updateFilterControlsUi();
         renderListingsPage();
     }
 
@@ -1184,9 +1292,65 @@
             state.page = 1;
             applyFiltersAndRender();
         });
+
+        filter.addEventListener('click', (event) => {
+            const toggleBtn = event.target.closest('.role-group-toggle');
+            if (!toggleBtn) return;
+            const group = toggleBtn.closest('.role-group');
+            if (!group) return;
+            const inputs = [...group.querySelectorAll('input[type="checkbox"]')];
+            if (inputs.length === 0) return;
+
+            const shouldCheck = !inputs.every((input) => input.checked);
+            for (const input of inputs) {
+                input.checked = shouldCheck;
+                const value = BigInt(input.value);
+                if (shouldCheck) {
+                    state.roles |= value;
+                } else {
+                    state.roles &= ~value;
+                }
+            }
+            state.page = 1;
+            applyFiltersAndRender();
+        });
     }
 
     function setUpAdvancedFilters() {
+        const toggleBtn = document.getElementById('advanced-filters-toggle');
+        const panel = document.getElementById('advanced-filters-panel');
+        if (toggleBtn && panel) {
+            toggleBtn.addEventListener('click', () => {
+                setAdvancedFiltersExpanded(panel.classList.contains('collapsed'));
+            });
+        }
+
+        const resetBtn = document.getElementById('reset-filters-btn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                if (searchDebounceTimer !== null) {
+                    window.clearTimeout(searchDebounceTimer);
+                    searchDebounceTimer = null;
+                }
+                state.searchQuery = '';
+                state.centre = 'All';
+                state.roles = 0n;
+                state.objectives = 0;
+                state.conditions = 0;
+                state.onePlayerPerJob = false;
+                state.minItemLevel = 0;
+                state.contentTypes = [];
+                state.selectedContents = [];
+                state.page = 1;
+                stateWasNull = true;
+                reflectState();
+                stateWasNull = false;
+                renderSelectedTags();
+                renderContentSelectOptions();
+                applyFiltersAndRender();
+            });
+        }
+
         const minILFilter = document.getElementById('min-il-filter');
         if (minILFilter) {
             minILFilter.addEventListener('input', (event) => {
@@ -1253,18 +1417,35 @@
         const container = trigger?.closest('.content-select-container');
         const dropdown = document.getElementById('content-select-dropdown');
         const listEl = document.getElementById('content-select-list');
+        const searchEl = document.getElementById('content-select-search');
         if (!trigger || !container || !dropdown || !listEl) return;
 
         trigger.addEventListener('click', () => {
             const isOpen = container.classList.toggle('open');
+            trigger.setAttribute('aria-expanded', String(isOpen));
             if (isOpen) {
                 renderContentSelectOptions();
+                if (searchEl) {
+                    searchEl.focus();
+                }
             }
         });
+
+        if (searchEl) {
+            searchEl.addEventListener('input', filterContentSelectItems);
+            searchEl.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    container.classList.remove('open');
+                    trigger.setAttribute('aria-expanded', 'false');
+                    trigger.focus();
+                }
+            });
+        }
 
         document.addEventListener('click', (event) => {
             if (!container.contains(event.target)) {
                 container.classList.remove('open');
+                trigger.setAttribute('aria-expanded', 'false');
             }
         });
 
@@ -1287,6 +1468,15 @@
         });
     }
 
+    function scrollToListingsTop() {
+        const listingsEl = document.getElementById('listings');
+        if (listingsEl && typeof listingsEl.scrollIntoView === 'function') {
+            listingsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
+
     function setUpPaginationControls() {
         const pagination = document.querySelector('.pagination');
         const prev = document.querySelector('.page-btn.prev');
@@ -1294,10 +1484,14 @@
         if (!pagination || !prev || !next) return;
 
         pagination.addEventListener('click', (event) => {
-            const page = Number(event.target.dataset.page);
+            const pageLink = event.target.closest('a[data-page]');
+            if (!pageLink) return;
+            event.preventDefault();
+            const page = Number(pageLink.dataset.page);
             if (!Number.isFinite(page)) return;
             state.page = page;
             renderListingsPage();
+            scrollToListingsTop();
         });
 
         prev.addEventListener('click', (event) => {
@@ -1305,6 +1499,7 @@
             if (state.page <= 1) return;
             state.page -= 1;
             renderListingsPage();
+            scrollToListingsTop();
         });
 
         next.addEventListener('click', (event) => {
@@ -1313,6 +1508,7 @@
             if (state.page >= totalPages) return;
             state.page += 1;
             renderListingsPage();
+            scrollToListingsTop();
         });
     }
 
@@ -1384,6 +1580,7 @@
         addJsClass();
         saveLoadState();
         reflectState();
+        setAdvancedFiltersExpanded(hasActiveAdvancedFilters());
         applyTranslations();
         renderSelectedTags();
 
