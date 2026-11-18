@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const path = require('node:path');
 const { URL } = require('node:url');
+const { promisify } = require('node:util');
+const zlib = require('node:zlib');
 const { WebSocket, WebSocketServer } = require('ws');
 
 const {
@@ -11,7 +13,14 @@ const {
   pickLanguage,
   sendOriginUnavailable,
 } = require('./src/edge/localization');
-const { createStaticHandler } = require('./src/edge/static-files');
+const {
+  createStaticHandler,
+  etagMatches,
+  selectAcceptEncoding,
+} = require('./src/edge/static-files');
+
+const gzipAsync = promisify(zlib.gzip);
+const gunzipAsync = promisify(zlib.gunzip);
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
@@ -20,6 +29,9 @@ const DEFAULT_MAX_WS_CLIENTS = Number(process.env.MAX_WS_CLIENTS || 512);
 const DEFAULT_WS_HEARTBEAT_MS = 30000;
 const DEFAULT_MAX_WS_BUFFERED_BYTES = 65536;
 const DEFAULT_WEBHOOK_MAX_BYTES = 16 * 1024;
+const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 15000;
+const DEFAULT_REVISION_LOCAL_TTL_MS = 60000;
+const DEFAULT_SNAPSHOT_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -75,11 +87,32 @@ function parseRequestUrl(req) {
 }
 
 function isRelayPath(pathname) {
-  return (
-    pathname.startsWith('/api/')
-    || pathname === '/contribute'
-    || pathname.startsWith('/contribute/')
-  );
+  return pathname === '/api' || pathname.startsWith('/api/');
+}
+
+function deriveSnapshotEtags(originEtag, bodyPlain) {
+  const raw = typeof originEtag === 'string' ? originEtag.trim() : '';
+  if (raw) {
+    const quotedMatch = /^(W\/)?"(.*)"$/i.exec(raw);
+    if (quotedMatch) {
+      const weak = quotedMatch[1] || '';
+      const inner = quotedMatch[2];
+      return {
+        etagPlain: `${weak}"${inner}"`,
+        etagGzip: `${weak}"${inner}-gz"`,
+      };
+    }
+    return {
+      etagPlain: `"${raw}"`,
+      etagGzip: `"${raw}-gz"`,
+    };
+  }
+
+  const hash = crypto.createHash('sha256').update(bodyPlain).digest('hex').slice(0, 16);
+  return {
+    etagPlain: `"${hash}"`,
+    etagGzip: `"${hash}-gz"`,
+  };
 }
 
 function stripHopByHopHeaders(headers) {
@@ -199,6 +232,15 @@ function createServer(options = {}) {
   const webhookMaxBytes = Number(options.webhookMaxBytes ?? DEFAULT_WEBHOOK_MAX_BYTES);
   const allowedWsOrigins = options.allowedWsOrigins ?? null;
   const requireWsOrigin = Boolean(options.requireWsOrigin);
+  const snapshotCacheTtlMs = Number(
+    options.snapshotCacheTtlMs ?? process.env.SNAPSHOT_CACHE_TTL_MS ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS,
+  );
+  const revisionLocalTtlMs = Number(
+    options.revisionLocalTtlMs ?? process.env.REVISION_LOCAL_TTL_MS ?? DEFAULT_REVISION_LOCAL_TTL_MS,
+  );
+  const snapshotCacheMaxBytes = Number(
+    options.snapshotCacheMaxBytes ?? process.env.SNAPSHOT_CACHE_MAX_BYTES ?? DEFAULT_SNAPSHOT_CACHE_MAX_BYTES,
+  );
 
   const ownsHttpAgent = !options.httpAgent;
   const ownsHttpsAgent = !options.httpsAgent;
@@ -213,7 +255,10 @@ function createServer(options = {}) {
     maxFreeSockets: Number(process.env.ORIGIN_MAX_FREE_SOCKETS || 8),
   });
 
-  let currentListingsRevision = 0;
+  let currentListingsRevision = null;
+  let lastRevisionWebhookAtMs = 0;
+  let cachedSnapshot = null;
+  let inflightSnapshotFetch = null;
   const wsServer = new WebSocketServer({
     noServer: true,
     maxPayload: wsMaxPayload,
@@ -228,16 +273,8 @@ function createServer(options = {}) {
     return target;
   }
 
-  function relayHttp(req, res, requestUrl) {
-    const target = originUrlFor(requestUrl);
-    if (!target) {
-      sendOriginUnavailable(req, res);
-      return;
-    }
-
-    const client = target.protocol === 'https:' ? https : http;
-    const headers = stripHopByHopHeaders(req.headers);
-    headers.host = target.host;
+  function buildOriginHeaders(req, target, baseHeaders) {
+    const headers = { ...baseHeaders, host: target.host };
     delete headers['x-rpf-forwarded-for'];
     delete headers['x-rpf-relay-secret'];
     const remoteIp = extractRelayClientIp(req, trustProxy);
@@ -247,6 +284,18 @@ function createServer(options = {}) {
     if (originRelaySecret) {
       headers['x-rpf-relay-secret'] = originRelaySecret;
     }
+    return headers;
+  }
+
+  function relayHttp(req, res, requestUrl) {
+    const target = originUrlFor(requestUrl);
+    if (!target) {
+      sendOriginUnavailable(req, res);
+      return;
+    }
+
+    const client = target.protocol === 'https:' ? https : http;
+    const headers = buildOriginHeaders(req, target, stripHopByHopHeaders(req.headers));
 
     const agent = target.protocol === 'https:' ? httpsAgent : httpAgent;
     const proxy = client.request(
@@ -290,6 +339,295 @@ function createServer(options = {}) {
       }
     });
     req.pipe(proxy);
+  }
+
+  function isSnapshotCacheFresh(snapshot, nowMs = Date.now()) {
+    if (!snapshot) return false;
+    if (
+      currentListingsRevision !== null
+      && (snapshot.revision === null || currentListingsRevision > snapshot.revision)
+    ) {
+      return false;
+    }
+    return (nowMs - snapshot.fetchedAtMs) < snapshotCacheTtlMs;
+  }
+
+  function performOriginSnapshotFetch({ req, target, revalidationEtag, previousSnapshot }) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (outcome) => {
+        if (!settled) {
+          settled = true;
+          resolve(outcome);
+        }
+      };
+
+      const client = target.protocol === 'https:' ? https : http;
+      const agent = target.protocol === 'https:' ? httpsAgent : httpAgent;
+      const headers = buildOriginHeaders(req, target, {
+        accept: 'application/json',
+        'accept-encoding': 'gzip',
+      });
+      if (revalidationEtag) {
+        headers['if-none-match'] = revalidationEtag;
+      }
+
+      const proxy = client.request(
+        target,
+        {
+          method: 'GET',
+          headers,
+          agent,
+          timeout: originTimeoutMs,
+        },
+        (originRes) => {
+          if (originRes.statusCode === 304 && previousSnapshot) {
+            originRes.on('error', () => finish({ kind: 'unavailable' }));
+            originRes.on('end', () => {
+              previousSnapshot.fetchedAtMs = Date.now();
+              cachedSnapshot = previousSnapshot;
+              finish({ kind: 'cached', snapshot: cachedSnapshot });
+            });
+            originRes.resume();
+            return;
+          }
+
+          const chunks = [];
+          let totalBytes = 0;
+          let exceededLimit = false;
+
+          originRes.on('data', (chunk) => {
+            if (settled || exceededLimit) return;
+            totalBytes += chunk.length;
+            if (totalBytes > snapshotCacheMaxBytes) {
+              exceededLimit = true;
+              originRes.destroy();
+              proxy.destroy();
+              finish({ kind: 'unavailable' });
+              return;
+            }
+            chunks.push(chunk);
+          });
+
+          originRes.on('error', () => finish({ kind: 'unavailable' }));
+          originRes.on('aborted', () => finish({ kind: 'unavailable' }));
+
+          originRes.on('end', async () => {
+            if (settled || exceededLimit) return;
+            const rawBody = Buffer.concat(chunks, totalBytes);
+            const cleanedHeaders = stripHopByHopHeaders(originRes.headers);
+
+            if (originRes.statusCode !== 200) {
+              finish({
+                kind: 'passthrough',
+                statusCode: originRes.statusCode || 502,
+                headers: cleanedHeaders,
+                body: rawBody,
+              });
+              return;
+            }
+
+            const encoding = String(originRes.headers['content-encoding'] || '').trim().toLowerCase();
+            let bodyPlain;
+            let bodyGzip;
+            try {
+              if (encoding === 'gzip') {
+                bodyGzip = rawBody;
+                bodyPlain = await gunzipAsync(bodyGzip);
+                if (bodyPlain.length > snapshotCacheMaxBytes) {
+                  finish({ kind: 'unavailable' });
+                  return;
+                }
+              } else if (!encoding || encoding === 'identity') {
+                bodyPlain = rawBody;
+                bodyGzip = await gzipAsync(bodyPlain, { level: 6 });
+              } else {
+                finish({
+                  kind: 'passthrough',
+                  statusCode: 200,
+                  headers: cleanedHeaders,
+                  body: rawBody,
+                });
+                return;
+              }
+            } catch {
+              finish({ kind: 'unavailable' });
+              return;
+            }
+
+            let parsedRevision = null;
+            try {
+              const parsed = JSON.parse(bodyPlain.toString('utf8'));
+              if (Number.isSafeInteger(parsed?.revision) && parsed.revision >= 0) {
+                parsedRevision = parsed.revision;
+              }
+            } catch {
+              finish({
+                kind: 'passthrough',
+                statusCode: 200,
+                headers: cleanedHeaders,
+                body: rawBody,
+              });
+              return;
+            }
+
+            const originEtag = typeof originRes.headers.etag === 'string'
+              ? originRes.headers.etag.trim()
+              : '';
+            const { etagPlain, etagGzip } = deriveSnapshotEtags(originEtag, bodyPlain);
+            const contentType = originRes.headers['content-type'] || 'application/json; charset=utf-8';
+
+            cachedSnapshot = {
+              revision: parsedRevision,
+              originEtag: originEtag || null,
+              etagPlain,
+              etagGzip,
+              bodyPlain,
+              bodyGzip,
+              contentType,
+              fetchedAtMs: Date.now(),
+            };
+            finish({ kind: 'cached', snapshot: cachedSnapshot });
+          });
+        },
+      );
+
+      proxy.on('timeout', () => proxy.destroy(new Error('origin timeout')));
+      proxy.on('error', () => finish({ kind: 'unavailable' }));
+      proxy.end();
+    });
+  }
+
+  async function getOrFetchSnapshot(req, target) {
+    if (isSnapshotCacheFresh(cachedSnapshot)) {
+      return { kind: 'cached', snapshot: cachedSnapshot };
+    }
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (isSnapshotCacheFresh(cachedSnapshot)) {
+        return { kind: 'cached', snapshot: cachedSnapshot };
+      }
+
+      if (!inflightSnapshotFetch) {
+        const startedForRevision = currentListingsRevision;
+        const previousSnapshot = cachedSnapshot;
+        const canSendConditional = Boolean(
+          previousSnapshot
+          && previousSnapshot.originEtag
+          && (startedForRevision === null
+            || (previousSnapshot.revision !== null && startedForRevision <= previousSnapshot.revision)),
+        );
+        const revalidationEtag = canSendConditional ? previousSnapshot.originEtag : null;
+
+        const promise = performOriginSnapshotFetch({
+          req,
+          target,
+          revalidationEtag,
+          previousSnapshot,
+        }).finally(() => {
+          if (inflightSnapshotFetch && inflightSnapshotFetch.promise === promise) {
+            inflightSnapshotFetch = null;
+          }
+        });
+
+        inflightSnapshotFetch = { promise, startedForRevision };
+      }
+
+      const currentInflight = inflightSnapshotFetch;
+      const outcome = await currentInflight.promise;
+      if (outcome.kind !== 'cached') {
+        return outcome;
+      }
+
+      if (
+        currentListingsRevision !== null
+        && (outcome.snapshot.revision === null || currentListingsRevision > outcome.snapshot.revision)
+        && (currentInflight.startedForRevision === null || currentInflight.startedForRevision < currentListingsRevision)
+      ) {
+        continue;
+      }
+
+      return outcome;
+    }
+
+    return cachedSnapshot
+      ? { kind: 'cached', snapshot: cachedSnapshot }
+      : { kind: 'unavailable' };
+  }
+
+  async function handleListingsSnapshot(req, res) {
+    const target = originUrlFor({ pathname: '/api/listings/snapshot', search: '' });
+    if (!target) {
+      sendOriginUnavailable(req, res);
+      return;
+    }
+
+    const outcome = await getOrFetchSnapshot(req, target);
+    if (res.headersSent || res.destroyed || res.writableEnded) {
+      return;
+    }
+
+    if (outcome.kind === 'unavailable') {
+      sendOriginUnavailable(req, res);
+      return;
+    }
+
+    if (outcome.kind === 'passthrough') {
+      const headers = { ...outcome.headers };
+      delete headers['content-length'];
+      headers['Content-Length'] = outcome.body.length;
+      res.writeHead(outcome.statusCode, headers);
+      res.end(req.method === 'HEAD' ? undefined : outcome.body);
+      return;
+    }
+
+    const { snapshot } = outcome;
+    const wantsGzip = selectAcceptEncoding(req.headers['accept-encoding'], false, true) === 'gzip';
+    const etag = wantsGzip ? snapshot.etagGzip : snapshot.etagPlain;
+
+    if (etagMatches(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, {
+        'Cache-Control': 'no-store',
+        Vary: 'Accept-Encoding',
+        ETag: etag,
+      }).end();
+      return;
+    }
+
+    const body = wantsGzip ? snapshot.bodyGzip : snapshot.bodyPlain;
+    const headers = {
+      'Content-Type': snapshot.contentType,
+      'Cache-Control': 'no-store',
+      Vary: 'Accept-Encoding',
+      ETag: etag,
+      'Content-Length': body.length,
+    };
+    if (wantsGzip) {
+      headers['Content-Encoding'] = 'gzip';
+    }
+
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : body);
+  }
+
+  function handleListingsRevision(req, res, requestUrl) {
+    const now = Date.now();
+    if (
+      currentListingsRevision !== null
+      && lastRevisionWebhookAtMs > 0
+      && (now - lastRevisionWebhookAtMs) < revisionLocalTtlMs
+    ) {
+      const body = Buffer.from(JSON.stringify({ revision: currentListingsRevision }), 'utf8');
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Content-Length': body.length,
+      });
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
+
+    relayHttp(req, res, requestUrl);
   }
 
   function broadcastListingsRevision(revision) {
@@ -341,7 +679,7 @@ function createServer(options = {}) {
 
       socket.rpfSubscribedToListings = true;
       socket.send(JSON.stringify({ type: 'subscribed', channel: 'listing_changes' }));
-      if (currentListingsRevision > 0) {
+      if (currentListingsRevision !== null && currentListingsRevision > 0) {
         socket.send(JSON.stringify({
           type: 'listings_revision_changed',
           revision: currentListingsRevision,
@@ -446,7 +784,8 @@ function createServer(options = {}) {
       return;
     }
 
-    const applied = revision > currentListingsRevision;
+    lastRevisionWebhookAtMs = Date.now();
+    const applied = currentListingsRevision === null || revision > currentListingsRevision;
     if (applied) {
       currentListingsRevision = revision;
       broadcastListingsRevision(revision);
@@ -513,6 +852,21 @@ function createServer(options = {}) {
       return;
     }
 
+    if (pathname === '/contribute' || pathname.startsWith('/contribute/')) {
+      res.writeHead(404).end('not found');
+      return;
+    }
+
+    if (pathname === '/api/listings/revision' && (req.method === 'GET' || req.method === 'HEAD')) {
+      handleListingsRevision(req, res, requestUrl);
+      return;
+    }
+
+    if (pathname === '/api/listings/snapshot' && (req.method === 'GET' || req.method === 'HEAD')) {
+      await handleListingsSnapshot(req, res);
+      return;
+    }
+
     if (isRelayPath(pathname)) {
       relayHttp(req, res, requestUrl);
       return;
@@ -563,6 +917,8 @@ function createServer(options = {}) {
   });
 
   server.on('close', () => {
+    cachedSnapshot = null;
+    inflightSnapshotFetch = null;
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
     }

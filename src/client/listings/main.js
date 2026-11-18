@@ -36,6 +36,7 @@
 
     const liveUpdates = {
         socket: null,
+        ws: null,
         retryTimer: null,
         refreshTimer: null,
         refreshTimerDelay: null,
@@ -306,6 +307,12 @@
                     ja: 'オルト・エウレカ',
                     de: 'Eureka Orthos',
                     fr: 'Eurêka Orthos',
+                },
+                4: {
+                    en: "Pilgrim's Traverse",
+                    ja: 'ピルグリム・トラバース',
+                    de: 'Pilgers Pfad',
+                    fr: 'Sanctuaire des pèlerins',
                 },
             };
             const name = specialDutyName(deepDungeonNames[dutyId]);
@@ -954,6 +961,20 @@
         bootstrapStatus.style.display = 'block';
     }
 
+    function listingRenderSignature(container, snapshotRevision) {
+        const listing = container?.listing || {};
+        const memberCount = Array.isArray(listing.members) ? listing.members.length : 0;
+        return [
+            listing.id ?? '',
+            listing.last_server_restart ?? container?.updated_at_timestamp ?? '',
+            listing.seconds_remaining ?? container?.time_left_seconds ?? '',
+            listing.slots_available ?? listing.slot_count ?? '',
+            listing.slots_filled_count ?? '',
+            memberCount,
+            snapshotRevision ?? '',
+        ].join('|');
+    }
+
     function renderListingsPage() {
         const listingsEl = document.getElementById('listings');
         if (!listingsEl) return;
@@ -961,6 +982,7 @@
         const start = (state.page - 1) * state.pageSize;
         const end = start + state.pageSize;
         const pageItems = state.filteredListings.slice(start, end);
+        const snapshotRevision = state.snapshot?.revision ?? '';
         const existingByKey = new Map(
             [...listingsEl.children]
                 .filter((element) => element.dataset.listingKey)
@@ -984,7 +1006,7 @@
                 ? `fallback:${fallbackKey}:${fallbackOccurrence}`
                 : String(listingId);
             const existing = existingByKey.get(listingKey);
-            const signature = JSON.stringify(container.listing || {});
+            const signature = listingRenderSignature(container, snapshotRevision);
 
             if (existing && existing.dataset.renderSignature === signature) {
                 updateListingCardTimes(existing, container);
@@ -1170,14 +1192,26 @@
             if (!response.ok) return;
 
             const body = await response.json();
-            const revision = Number(body?.revision);
-            if (!Number.isFinite(revision) || revision === liveUpdates.targetRevision) return;
+            if (body?.revision === null || body?.revision === undefined) return;
+            const revision = Number(body.revision);
+            if (!Number.isFinite(revision) || Number(revision) <= Number(liveUpdates.targetRevision || 0)) return;
 
             liveUpdates.targetRevision = revision;
             scheduleListingsRefresh(0);
         } catch (error) {
             console.debug('live listings revision poll failed', error);
         }
+    }
+
+    function isLiveSocketOpen() {
+        const activeSocket = liveUpdates.ws || liveUpdates.socket;
+        const openState = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
+        return Boolean(activeSocket && activeSocket.readyState === openState);
+    }
+
+    function scheduleLiveSnapshotFetch() {
+        const delay = 150 + Math.floor(Math.random() * 450);
+        scheduleListingsRefresh(delay);
     }
 
     function scheduleListingsRefresh(delay = 500) {
@@ -1212,11 +1246,13 @@
     function connectLiveUpdates() {
         if (!('WebSocket' in window)) return;
         if (liveUpdates.paused || document.visibilityState === 'hidden') return;
-        if (liveUpdates.socket && liveUpdates.socket.readyState <= WebSocket.OPEN) return;
+        const currentSocket = liveUpdates.ws || liveUpdates.socket;
+        if (currentSocket && currentSocket.readyState <= WebSocket.OPEN) return;
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
         liveUpdates.socket = socket;
+        liveUpdates.ws = socket;
 
         socket.addEventListener('open', () => {
             liveUpdates.retryAttempt = 0;
@@ -1228,10 +1264,11 @@
                 const message = JSON.parse(event.data);
                 if (message.type === 'listings_revision_changed') {
                     if (typeof message.revision === 'number') {
-                        if (message.revision === liveUpdates.targetRevision) return;
-                        liveUpdates.targetRevision = message.revision;
+                        const revision = Number(message.revision);
+                        if (!Number.isFinite(revision) || Number(revision) <= Number(liveUpdates.targetRevision || 0)) return;
+                        liveUpdates.targetRevision = revision;
                     }
-                    scheduleListingsRefresh();
+                    scheduleLiveSnapshotFetch();
                 }
             } catch (error) {
                 console.debug('ignored live listings message', error);
@@ -1239,8 +1276,9 @@
         });
 
         socket.addEventListener('close', () => {
-            if (liveUpdates.socket === socket) {
+            if (liveUpdates.socket === socket || liveUpdates.ws === socket) {
                 liveUpdates.socket = null;
+                liveUpdates.ws = null;
                 if (!liveUpdates.paused) {
                     scheduleLiveReconnect();
                 }
@@ -1532,13 +1570,19 @@
     if (typeof module !== 'undefined' && module.exports && !isBrowserBundle) {
         module.exports.__test__ = {
             applySnapshotExpiryTimestamps,
+            connectLiveUpdates,
+            isLiveSocketOpen,
+            listingDutyName,
             listingMatchesFilters,
+            listingRenderSignature,
             renderPhaseProgress,
             renderDescription,
             renderListingCard,
             renderProgressTags,
             normalizeSavedState,
+            pollListingsRevision,
             pruneExpiredListings,
+            scheduleLiveSnapshotFetch,
             scheduleListingsRefresh,
             secondsUntilListingExpiry,
             selectedCountLabel,
@@ -1559,10 +1603,11 @@
                 liveUpdates.pendingRefresh = true;
             }
             window.clearTimeout(liveUpdates.retryTimer);
-            if (liveUpdates.socket) {
-                const socket = liveUpdates.socket;
+            const activeSocket = liveUpdates.ws || liveUpdates.socket;
+            if (activeSocket) {
                 liveUpdates.socket = null;
-                socket.close();
+                liveUpdates.ws = null;
+                activeSocket.close();
             }
             return;
         }
@@ -1594,8 +1639,10 @@
 
         await fetchSnapshot(false);
         connectLiveUpdates();
-        pollListingsRevision();
-        setInterval(pollListingsRevision, REVISION_POLL_INTERVAL_MS);
+        setInterval(() => {
+            if (isLiveSocketOpen()) return;
+            pollListingsRevision();
+        }, REVISION_POLL_INTERVAL_MS);
         setInterval(updateTimeDisplays, 1000);
     }
 

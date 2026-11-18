@@ -75,5 +75,26 @@
         }
     }
 
+    function hydrateAssetManifest() {
+        if (typeof document === 'undefined' || typeof window === 'undefined') return;
+        if (window.__RPF_ASSETS__) return;
+
+        const meta = typeof document.querySelector === 'function'
+            ? document.querySelector('meta[name="rpf-assets"]')
+            : null;
+        const raw = meta?.getAttribute?.('content');
+        if (!raw) return;
+
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                window.__RPF_ASSETS__ = parsed;
+            }
+        } catch (_) {
+            // Ignore malformed asset manifest metadata.
+        }
+    }
+
+    hydrateAssetManifest();
     setUpLanguage();
 })();

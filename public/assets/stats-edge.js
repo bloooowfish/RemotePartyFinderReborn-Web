@@ -271,6 +271,24 @@
 
     let chartScriptsPromise = null;
 
+    function resolveAssetUrl(assetPath) {
+        if (typeof window !== 'undefined' && window.__RPF_ASSETS__?.[assetPath]) {
+            return window.__RPF_ASSETS__[assetPath];
+        }
+        const raw = typeof document !== 'undefined'
+            ? document.querySelector?.('meta[name="rpf-assets"]')?.getAttribute?.('content')
+            : null;
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (typeof parsed?.[assetPath] === 'string') return parsed[assetPath];
+            } catch (_) {
+                // Ignore malformed manifest metadata.
+            }
+        }
+        return assetPath;
+    }
+
     function loadScript(src) {
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
@@ -287,9 +305,9 @@
 
         chartScriptsPromise = (async () => {
             if (!window.d3) {
-                await loadScript('/assets/d3.js');
+                await loadScript(resolveAssetUrl('/assets/d3.js'));
             }
-            await loadScript('/assets/stats.js');
+            await loadScript(resolveAssetUrl('/assets/stats.js'));
         })().catch((error) => {
             chartScriptsPromise = null;
             throw error;

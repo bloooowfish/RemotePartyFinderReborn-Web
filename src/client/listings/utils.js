@@ -55,10 +55,38 @@ function pruneExpiredListings(snapshot, currentSeconds = nowSeconds()) {
     return true;
 }
 
+let cachedManifestRaw = null;
+let cachedManifestMap = null;
+
+function resolveAssetUrl(assetPath) {
+    if (typeof window !== 'undefined' && window.__RPF_ASSETS__ && typeof window.__RPF_ASSETS__[assetPath] === 'string') {
+        return window.__RPF_ASSETS__[assetPath];
+    }
+    if (typeof document !== 'undefined' && typeof document.querySelector === 'function') {
+        const raw = document.querySelector('meta[name="rpf-assets"]')?.getAttribute?.('content');
+        if (raw) {
+            if (raw !== cachedManifestRaw) {
+                cachedManifestRaw = raw;
+                try {
+                    const parsed = JSON.parse(raw);
+                    cachedManifestMap = parsed && typeof parsed === 'object' ? parsed : null;
+                } catch (_) {
+                    cachedManifestMap = null;
+                }
+            }
+            if (cachedManifestMap && typeof cachedManifestMap[assetPath] === 'string') {
+                return cachedManifestMap[assetPath];
+            }
+        }
+    }
+    return assetPath;
+}
+
 module.exports = {
     applySnapshotExpiryTimestamps,
     escapeHtml,
     nowSeconds,
     pruneExpiredListings,
+    resolveAssetUrl,
     secondsUntilListingExpiry,
 };

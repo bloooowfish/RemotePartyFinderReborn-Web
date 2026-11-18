@@ -92,6 +92,32 @@ function sendOriginUnavailable(req, res, options = {}) {
   }
 }
 
+function buildAssetManifest(assetVersions) {
+  if (!assetVersions || assetVersions.size === 0) return null;
+
+  const manifest = {};
+  for (const [pathname, version] of assetVersions.entries()) {
+    if (!version || /^\/assets\/listing-data(?:\.|$)/.test(pathname)) {
+      continue;
+    }
+    manifest[pathname] = `${pathname}?v=${version}`;
+  }
+  return Object.keys(manifest).length > 0 ? manifest : null;
+}
+
+function injectAssetManifest(html, assetVersions) {
+  const manifest = buildAssetManifest(assetVersions);
+  if (!manifest || /name="rpf-assets"/i.test(html)) {
+    return html;
+  }
+
+  const metaTag = `<meta name="rpf-assets" content="${escapeHtml(JSON.stringify(manifest))}" />`;
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `    ${metaTag}\n</head>`);
+  }
+  return html;
+}
+
 function localizeHtmlForLanguage(lang, html, assetVersions = null) {
   const safeLang = LANGUAGE_NAMES[lang] ? lang : 'en';
   const name = LANGUAGE_NAMES[safeLang];
@@ -117,6 +143,7 @@ function localizeHtmlForLanguage(lang, html, assetVersions = null) {
         return `${attr}="${pathname}?v=${version}${fragment}"`;
       },
     );
+    localized = injectAssetManifest(localized, assetVersions);
   }
 
   return localized;
@@ -131,7 +158,9 @@ module.exports = {
   LOCALIZED_HTML_VARY,
   SERVICE_UNAVAILABLE,
   SUPPORTED_LANGUAGES,
+  buildAssetManifest,
   escapeHtml,
+  injectAssetManifest,
   localizeHtml,
   localizeHtmlForLanguage,
   pickLanguage,

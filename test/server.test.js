@@ -227,9 +227,16 @@ test('uses the configured HTTP keep-alive agent for origin relay requests', asyn
   }
 });
 
-test('relays party detail POST bodies to origin', async () => {
-  let captured;
+test('relays API POST bodies to origin while returning 404 for /contribute*', async () => {
+  let captured = null;
+  let originContributeHits = 0;
   const origin = http.createServer(async (req, res) => {
+    if (req.url.startsWith('/contribute')) {
+      originContributeHits += 1;
+      res.writeHead(200).end('should-not-hit');
+      return;
+    }
+
     const chunks = [];
     for await (const chunk of req) {
       chunks.push(chunk);
@@ -242,7 +249,7 @@ test('relays party detail POST bodies to origin', async () => {
     };
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', matched_count: 1, modified_count: 1 }));
+    res.end(JSON.stringify({ status: 'ok' }));
   });
 
   const originUrl = await listen(origin);
@@ -253,23 +260,31 @@ test('relays party detail POST bodies to origin', async () => {
   const appUrl = await listen(app);
 
   try {
-    const payload = {
-      listing_id: 1,
-      leader_content_id: 2,
-      leader_name: 'Leader',
-      home_world: 73,
-      member_content_ids: [2],
-    };
-    const response = await fetch(`${appUrl}/contribute/detail`, {
+    const payload = { test: 'value' };
+    const contributePost = await fetch(`${appUrl}/contribute/detail`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(contributePost.status, 404);
+
+    const contributeRoot = await fetch(`${appUrl}/contribute`, { method: 'POST' });
+    assert.equal(contributeRoot.status, 404);
+
+    const contributeGet = await fetch(`${appUrl}/contribute/multiple`);
+    assert.equal(contributeGet.status, 404);
+    assert.equal(originContributeHits, 0);
+
+    const apiResponse = await fetch(`${appUrl}/api/test-relay`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
 
-    assert.equal(response.status, 200);
-    await response.text();
+    assert.equal(apiResponse.status, 200);
+    await apiResponse.text();
     assert.equal(captured.method, 'POST');
-    assert.equal(captured.url, '/contribute/detail');
+    assert.equal(captured.url, '/api/test-relay');
     assert.deepEqual(JSON.parse(captured.body), payload);
   } finally {
     await close(app);
@@ -607,16 +622,18 @@ test('SSRF and open-proxy request targets are blocked early on HTTP and WS upgra
   assert.match(badWsTarget, /^HTTP\/1\.1 400 Bad Request/);
 });
 
-test('relay path validation enforces exact /api/* and /contribute* boundaries and 426 upgrade handling', async () => {
+test('relay path validation enforces exact /api and /api/* boundaries and blocks /contribute*', async () => {
+  assert.equal(isRelayPath('/api'), true);
   assert.equal(isRelayPath('/api/listings'), true);
-  assert.equal(isRelayPath('/api'), false);
   assert.equal(isRelayPath('/api-evil'), false);
-  assert.equal(isRelayPath('/contribute'), true);
-  assert.equal(isRelayPath('/contribute/multiple'), true);
+  assert.equal(isRelayPath('/contribute'), false);
+  assert.equal(isRelayPath('/contribute/multiple'), false);
   assert.equal(isRelayPath('/contribute-evil'), false);
 
   const notRelay = await fetch(`${baseUrl}/contribute-evil`);
   assert.equal(notRelay.status, 404);
+  assert.equal((await fetch(`${baseUrl}/contribute`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/contribute/multiple`)).status, 404);
 
   const plainWsHttp = await fetch(`${baseUrl}/api/ws`);
   assert.equal(plainWsHttp.status, 426);
@@ -860,7 +877,7 @@ test('proxy strips spoofed relay secret, forwards configured secret, and honors 
   const trustedUrl = await listen(trustedProxyApp);
 
   try {
-    const resUntrusted = await httpGetRaw(`${untrustedUrl}/contribute/fflogs/jobs`, {
+    const resUntrusted = await httpGetRaw(`${untrustedUrl}/api/stats`, {
       'x-rpf-relay-secret': 'attacker-spoof',
       'x-envoy-external-address': '198.51.100.42',
       'x-forwarded-for': '203.0.113.99',
@@ -869,7 +886,7 @@ test('proxy strips spoofed relay secret, forwards configured secret, and honors 
     assert.equal(lastHeaders['x-rpf-relay-secret'], 'webhook-fallback-secret');
     assert.equal(lastHeaders['x-rpf-forwarded-for'], '127.0.0.1');
 
-    const resTrustedEnvoy = await httpGetRaw(`${trustedUrl}/contribute/multiple`, {
+    const resTrustedEnvoy = await httpGetRaw(`${trustedUrl}/api/stats`, {
       'x-rpf-relay-secret': 'attacker-spoof',
       'x-envoy-external-address': '::ffff:198.51.100.42',
       'x-forwarded-for': '203.0.113.99, 10.0.0.1',
@@ -878,7 +895,7 @@ test('proxy strips spoofed relay secret, forwards configured secret, and honors 
     assert.equal(lastHeaders['x-rpf-relay-secret'], 'explicit-relay-secret');
     assert.equal(lastHeaders['x-rpf-forwarded-for'], '198.51.100.42');
 
-    const resTrustedXff = await httpGetRaw(`${trustedUrl}/contribute/multiple`, {
+    const resTrustedXff = await httpGetRaw(`${trustedUrl}/api/stats`, {
       'x-forwarded-for': 'not-an-ip, 203.0.113.77, 10.0.0.2',
     });
     assert.equal(resTrustedXff.status, 200);
@@ -886,6 +903,196 @@ test('proxy strips spoofed relay secret, forwards configured secret, and honors 
   } finally {
     await close(trustedProxyApp);
     await close(untrustedProxyApp);
+    await close(origin);
+  }
+});
+
+test('snapshot singleflight cache deduplicates concurrent fetches, serves gzip/plain + 304 from RAM, and invalidates on revision or TTL', async () => {
+  let originRevision = 10;
+  let originListings = [{ id: 1 }];
+  let snapshotHits = 0;
+  let releaseFetch = null;
+
+  const origin = http.createServer((req, res) => {
+    if (req.url !== '/api/listings/snapshot') {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    snapshotHits += 1;
+    const hitIndex = snapshotHits;
+    const etag = `"snap-rev-${originRevision}"`;
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-store' }).end();
+      return;
+    }
+
+    const respond = () => {
+      const json = JSON.stringify({ revision: originRevision, listings: originListings });
+      const gz = zlib.gzipSync(Buffer.from(json, 'utf8'));
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Encoding': 'gzip',
+        ETag: etag,
+        'Cache-Control': 'no-store',
+      });
+      res.end(gz);
+    };
+
+    if (hitIndex === 1) {
+      releaseFetch = respond;
+    } else {
+      respond();
+    }
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({
+    originBaseUrl: originUrl,
+    revisionWebhookSecret: 'webhook-secret',
+    snapshotCacheTtlMs: 80,
+  });
+  const appUrl = await listen(app);
+
+  try {
+    const concurrentPromises = Array.from({ length: 25 }, (_, i) => (
+      httpGetRaw(
+        `${appUrl}/api/listings/snapshot`,
+        i % 2 === 0 ? { 'Accept-Encoding': 'gzip' } : {},
+      )
+    ));
+
+    await new Promise((resolve) => {
+      const check = () => (releaseFetch ? resolve() : setTimeout(check, 5));
+      check();
+    });
+    assert.equal(snapshotHits, 1);
+    releaseFetch();
+    releaseFetch = null;
+
+    const results = await Promise.all(concurrentPromises);
+    assert.equal(snapshotHits, 1, 'all 25 concurrent requests must share 1 upstream fetch');
+
+    let plainEtag = null;
+    let gzipEtag = null;
+    for (let i = 0; i < results.length; i += 1) {
+      const res = results[i];
+      assert.equal(res.status, 200);
+      if (i % 2 === 0) {
+        assert.equal(res.headers['content-encoding'], 'gzip');
+        gzipEtag = res.headers.etag;
+        assert.deepEqual(JSON.parse(zlib.gunzipSync(res.body).toString('utf8')), {
+          revision: 10,
+          listings: [{ id: 1 }],
+        });
+      } else {
+        assert.equal(res.headers['content-encoding'], undefined);
+        plainEtag = res.headers.etag;
+        assert.deepEqual(JSON.parse(res.body.toString('utf8')), {
+          revision: 10,
+          listings: [{ id: 1 }],
+        });
+      }
+    }
+    assert.notEqual(plainEtag, gzipEtag);
+
+    // Warm cache hit & 304 conditional responses directly from RAM (0 origin hits).
+    const plain304 = await httpGetRaw(`${appUrl}/api/listings/snapshot`, { 'If-None-Match': plainEtag });
+    assert.equal(plain304.status, 304);
+    const gzip304 = await httpGetRaw(`${appUrl}/api/listings/snapshot`, {
+      'Accept-Encoding': 'gzip',
+      'If-None-Match': gzipEtag,
+    });
+    assert.equal(gzip304.status, 304);
+    assert.equal(snapshotHits, 1);
+
+    // Webhook advances revision -> stale cache + stale If-None-Match must bypass 304 and fetch new revision.
+    originRevision = 11;
+    originListings = [{ id: 2 }];
+    const webhookRes = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 11 }),
+    });
+    assert.equal(webhookRes.status, 200);
+
+    const rev11Res = await httpGetRaw(`${appUrl}/api/listings/snapshot`, {
+      'Accept-Encoding': 'gzip',
+      'If-None-Match': gzipEtag,
+    });
+    assert.equal(rev11Res.status, 200);
+    assert.equal(snapshotHits, 2);
+    assert.deepEqual(JSON.parse(zlib.gunzipSync(rev11Res.body).toString('utf8')), {
+      revision: 11,
+      listings: [{ id: 2 }],
+    });
+
+    // Wait past snapshotCacheTtlMs -> revalidates with origin (304 updates timestamp without transferring body).
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const revalidated304 = await httpGetRaw(`${appUrl}/api/listings/snapshot`, {
+      'Accept-Encoding': 'gzip',
+      'If-None-Match': rev11Res.headers.etag,
+    });
+    assert.equal(revalidated304.status, 304);
+    assert.equal(snapshotHits, 3);
+  } finally {
+    await close(app);
+    await close(origin);
+  }
+});
+
+test('/api/listings/revision serves directly from RAM during recent webhook heartbeat and falls back to origin after TTL', async () => {
+  let originRevisionCalls = 0;
+  const origin = http.createServer((req, res) => {
+    if (req.url === '/api/listings/revision') {
+      originRevisionCalls += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ revision: 42 }));
+      return;
+    }
+    res.writeHead(404).end('not found');
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({
+    originBaseUrl: originUrl,
+    revisionWebhookSecret: 'webhook-secret',
+    revisionLocalTtlMs: 80,
+  });
+  const appUrl = await listen(app);
+
+  try {
+    // Before webhook arrives, currentListingsRevision is null so edge relays to origin.
+    const initialRes = await fetch(`${appUrl}/api/listings/revision`);
+    assert.equal(initialRes.status, 200);
+    assert.deepEqual(await initialRes.json(), { revision: 42 });
+    assert.equal(originRevisionCalls, 1);
+
+    // Webhook sets revision + recent heartbeat -> served from RAM with 0 origin calls.
+    await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 43 }),
+    });
+
+    const cachedRevRes = await fetch(`${appUrl}/api/listings/revision`);
+    assert.equal(cachedRevRes.status, 200);
+    assert.deepEqual(await cachedRevRes.json(), { revision: 43 });
+    assert.equal(originRevisionCalls, 1);
+
+    // After heartbeat TTL expires, falls back to relaying to origin.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const fallbackRes = await fetch(`${appUrl}/api/listings/revision`);
+    assert.equal(fallbackRes.status, 200);
+    assert.deepEqual(await fallbackRes.json(), { revision: 42 });
+    assert.equal(originRevisionCalls, 2);
+  } finally {
+    await close(app);
     await close(origin);
   }
 });
