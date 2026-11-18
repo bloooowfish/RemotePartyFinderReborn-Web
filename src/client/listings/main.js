@@ -13,6 +13,8 @@
     const PAGE_SIZE = 50;
     const ELLIPSIS = 'ellipsis';
     const REVISION_POLL_INTERVAL_MS = 15000;
+    const WS_SILENT_BACKSTOP_INTERVAL_MS = 45000;
+    const SNAPSHOT_RESUME_CHECK_MS = REVISION_POLL_INTERVAL_MS;
 
     let stateWasNull = false;
 
@@ -42,7 +44,14 @@
         refreshTimerDelay: null,
         retryAttempt: 0,
         revision: 0,
+        revisionEpoch: null,
         targetRevision: 0,
+        targetEpoch: null,
+        snapshotEtag: null,
+        snapshotPayloadStamp: null,
+        lastSnapshotAtMs: 0,
+        lastWsEventAtMs: 0,
+        lastRevisionPollAtMs: 0,
         refreshing: false,
         pendingRefresh: false,
         refreshFailureCount: 0,
@@ -224,7 +233,7 @@
     }
 
     function listingData() {
-        return window.RPF_LISTING_DATA || {};
+        return typeof window !== 'undefined' ? (window.RPF_LISTING_DATA || {}) : {};
     }
 
     function lookupLocalized(mapName, key) {
@@ -961,17 +970,125 @@
         bootstrapStatus.style.display = 'block';
     }
 
-    function listingRenderSignature(container, snapshotRevision) {
+    function hashSignatureInto(hash, value) {
+        const text = String(value ?? '');
+        let next = hash;
+        for (let i = 0; i < text.length; i += 1) {
+            next ^= text.charCodeAt(i);
+            next = Math.imul(next, 0x01000193);
+        }
+        next ^= 0x1f;
+        return Math.imul(next, 0x01000193);
+    }
+
+    function parseRenderMarker(parse) {
+        if (!parse) return '0';
+        return [
+            parse.hidden ? 1 : 0,
+            parse.originally_hidden ? 1 : 0,
+            parse.has_secondary ? 1 : 0,
+            parse.estimated ? 1 : 0,
+            parse.primary_percentile ?? '',
+            parse.primary_color_class ?? '',
+            parse.secondary_percentile ?? '',
+            parse.secondary_color_class ?? '',
+        ].join(':');
+    }
+
+    function progressRenderDigest(progress) {
+        if (!progress) return '0';
+        let hash = 0x811c9dc5;
+        hash = hashSignatureInto(hash, progress.final_clear_count ?? '');
+        hash = hashSignatureInto(hash, progress.final_boss_percentage ?? '');
+        hash = hashSignatureInto(hash, progress.final_boss_phase ?? '');
+        const phases = Array.isArray(progress.phase_progress) ? progress.phase_progress : [];
+        hash = hashSignatureInto(hash, phases.length);
+        for (let i = 0; i < phases.length; i += 1) {
+            const phase = phases[i];
+            hash = hashSignatureInto(hash, phase?.phase_key ?? '');
+            hash = hashSignatureInto(hash, phase?.phase_name ?? '');
+            hash = hashSignatureInto(hash, phase?.order ?? '');
+            hash = hashSignatureInto(hash, phase?.boss_percentage ?? '');
+            hash = hashSignatureInto(hash, phase?.display_text ?? '');
+            hash = hashSignatureInto(hash, phase?.source ?? '');
+        }
+        return (hash >>> 0).toString(36);
+    }
+
+    function slotsRenderDigest(displaySlots) {
+        const slots = Array.isArray(displaySlots) ? displaySlots : [];
+        let hash = 0x811c9dc5;
+        hash = hashSignatureInto(hash, slots.length);
+        for (let i = 0; i < slots.length; i += 1) {
+            const slot = slots[i];
+            hash = hashSignatureInto(hash, slot?.filled ? 1 : 0);
+            hash = hashSignatureInto(hash, slot?.icon_code ?? '');
+            hash = hashSignatureInto(hash, slot?.role_class ?? '');
+            hash = hashSignatureInto(hash, slot?.title ?? '');
+        }
+        return (hash >>> 0).toString(36);
+    }
+
+    function membersRenderDigest(members) {
+        const list = Array.isArray(members) ? members : [];
+        let hash = 0x811c9dc5;
+        hash = hashSignatureInto(hash, list.length);
+        for (let i = 0; i < list.length; i += 1) {
+            const member = list[i];
+            hash = hashSignatureInto(hash, member?.name ?? '');
+            hash = hashSignatureInto(hash, member?.home_world?.name ?? '');
+            hash = hashSignatureInto(hash, member?.job_id ?? '');
+            hash = hashSignatureInto(hash, member?.job_code ?? '');
+            hash = hashSignatureInto(hash, member?.role_class ?? '');
+            hash = hashSignatureInto(hash, member?.party_index ?? '');
+            hash = hashSignatureInto(hash, member?.slot_index ?? '');
+            hash = hashSignatureInto(hash, member?.fflogs_character_url ?? '');
+            hash = hashSignatureInto(hash, parseRenderMarker(member?.parse));
+            hash = hashSignatureInto(hash, progressRenderDigest(member?.progress));
+        }
+        return `${list.length}:${(hash >>> 0).toString(36)}`;
+    }
+
+    function descriptionRenderDigest(listing) {
+        let hash = 0x811c9dc5;
+        hash = hashSignatureInto(hash, seStringText(listing.description));
+        hash = hashSignatureInto(hash, listing.description_badge_class ?? '');
+        const badges = Array.isArray(listing.description_badges) ? listing.description_badges : [];
+        hash = hashSignatureInto(hash, badges.length);
+        for (let i = 0; i < badges.length; i += 1) {
+            hash = hashSignatureInto(hash, badges[i] ?? '');
+        }
+        return (hash >>> 0).toString(36);
+    }
+
+    function listingRenderSignature(container) {
         const listing = container?.listing || {};
-        const memberCount = Array.isArray(listing.members) ? listing.members.length : 0;
         return [
             listing.id ?? '',
-            listing.last_server_restart ?? container?.updated_at_timestamp ?? '',
-            listing.seconds_remaining ?? container?.time_left_seconds ?? '',
-            listing.slots_available ?? listing.slot_count ?? '',
-            listing.slots_filled_count ?? '',
-            memberCount,
-            snapshotRevision ?? '',
+            listing.duty_id ?? '',
+            listing.duty_type ?? '',
+            listing.category ?? '',
+            listing.cross_world ? 1 : 0,
+            listing.data_centre ?? '',
+            listing.min_item_level ?? 0,
+            listing.num_parties ?? 0,
+            listing.slots_available ?? listing.slot_count ?? 0,
+            listing.slots_filled_count ?? 0,
+            listing.high_end ? 1 : 0,
+            listing.is_alliance_view ? 1 : 0,
+            listing.objective_bits ?? 0,
+            listing.conditions_bits ?? 0,
+            listing.search_area_bits ?? 0,
+            listing.content_kind ?? 0,
+            listing.joinable_roles ?? 0,
+            state.lang || 'en',
+            seStringText(listing.creator_name),
+            listing.home_world?.name ?? '',
+            listing.created_world?.name ?? '',
+            descriptionRenderDigest(listing),
+            slotsRenderDigest(listing.display_slots),
+            parseRenderMarker(listing.leader_parse),
+            membersRenderDigest(listing.members),
         ].join('|');
     }
 
@@ -982,7 +1099,6 @@
         const start = (state.page - 1) * state.pageSize;
         const end = start + state.pageSize;
         const pageItems = state.filteredListings.slice(start, end);
-        const snapshotRevision = state.snapshot?.revision ?? '';
         const existingByKey = new Map(
             [...listingsEl.children]
                 .filter((element) => element.dataset.listingKey)
@@ -1006,7 +1122,7 @@
                 ? `fallback:${fallbackKey}:${fallbackOccurrence}`
                 : String(listingId);
             const existing = existingByKey.get(listingKey);
-            const signature = listingRenderSignature(container, snapshotRevision);
+            const signature = listingRenderSignature(container);
 
             if (existing && existing.dataset.renderSignature === signature) {
                 updateListingCardTimes(existing, container);
@@ -1107,15 +1223,111 @@
         renderListingsPage();
     }
 
-    function setSnapshot(snapshot, preservePage) {
+    function normalizeRevisionEpoch(value) {
+        if (typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        return trimmed.length > 0 && trimmed.length <= 128 ? trimmed : null;
+    }
+
+    function computeSnapshotPayloadStamp(snapshot) {
+        const listings = Array.isArray(snapshot?.listings) ? snapshot.listings : [];
+        const first = listings[0]?.listing;
+        const last = listings.length > 0 ? listings[listings.length - 1]?.listing : null;
+        return `${snapshot?.revision ?? ''}|${listings.length}|${first?.id ?? ''}|${last?.id ?? ''}`;
+    }
+
+    function isTargetAheadOfLoaded() {
+        if (liveUpdates.targetEpoch) {
+            if (!liveUpdates.revisionEpoch || liveUpdates.targetEpoch > liveUpdates.revisionEpoch) {
+                return true;
+            }
+            if (liveUpdates.targetEpoch < liveUpdates.revisionEpoch) {
+                return false;
+            }
+        }
+        return Number(liveUpdates.targetRevision || 0) > Number(liveUpdates.revision || 0);
+    }
+
+    function shouldAcceptRevisionTarget(nextRevision, nextEpoch) {
+        const revision = Number(nextRevision);
+        if (!Number.isFinite(revision) || revision < 0) return false;
+        const epoch = normalizeRevisionEpoch(nextEpoch);
+        if (epoch) {
+            if (!liveUpdates.targetEpoch || epoch > liveUpdates.targetEpoch) {
+                return true;
+            }
+            if (epoch < liveUpdates.targetEpoch) {
+                return false;
+            }
+            return revision > Number(liveUpdates.targetRevision || 0);
+        }
+        if (liveUpdates.targetEpoch) {
+            return false;
+        }
+        return revision > Number(liveUpdates.targetRevision || 0);
+    }
+
+    function setSnapshot(snapshot, preservePage, meta = {}) {
         applySnapshotExpiryTimestamps(snapshot);
         state.snapshot = snapshot;
         rebuildSnapshotDerivedData();
-        if (typeof snapshot?.revision === 'number') {
-            liveUpdates.revision = snapshot.revision;
-            liveUpdates.targetRevision = snapshot.revision;
-            liveUpdates.refreshFailureCount = 0;
+
+        const prevLoadedRevision = Number(liveUpdates.revision || 0);
+        const prevLoadedEpoch = liveUpdates.revisionEpoch || null;
+        const prevEtag = liveUpdates.snapshotEtag || null;
+        const prevPayloadStamp = liveUpdates.snapshotPayloadStamp || null;
+
+        const snapRevision = typeof snapshot?.revision === 'number' && Number.isFinite(snapshot.revision)
+            ? snapshot.revision
+            : null;
+        const snapEpoch = normalizeRevisionEpoch(snapshot?.revision_epoch ?? snapshot?.epoch);
+        const nextEtag = normalizeRevisionEpoch(meta.responseEtag);
+        const nextPayloadStamp = computeSnapshotPayloadStamp(snapshot);
+        const etagChanged = Boolean(prevEtag && nextEtag && prevEtag !== nextEtag);
+        const payloadChanged = Boolean(prevPayloadStamp && prevPayloadStamp !== nextPayloadStamp);
+
+        if (nextEtag) {
+            liveUpdates.snapshotEtag = nextEtag;
         }
+        liveUpdates.snapshotPayloadStamp = nextPayloadStamp;
+        liveUpdates.lastSnapshotAtMs = Date.now();
+        liveUpdates.refreshFailureCount = 0;
+
+        if (snapRevision !== null) {
+            liveUpdates.revision = snapRevision;
+            liveUpdates.revisionEpoch = snapEpoch;
+
+            const targetChangedMidFlight = meta.startedTargetRevision !== undefined
+                && (
+                    liveUpdates.targetEpoch !== (meta.startedTargetEpoch ?? null)
+                    || liveUpdates.targetRevision !== meta.startedTargetRevision
+                );
+
+            if (snapEpoch) {
+                if (!liveUpdates.targetEpoch || snapEpoch > liveUpdates.targetEpoch) {
+                    liveUpdates.targetEpoch = snapEpoch;
+                    liveUpdates.targetRevision = snapRevision;
+                } else if (snapEpoch === liveUpdates.targetEpoch) {
+                    if (!targetChangedMidFlight || snapRevision > Number(liveUpdates.targetRevision || 0)) {
+                        liveUpdates.targetRevision = snapRevision;
+                    }
+                } else if (!targetChangedMidFlight && prevLoadedEpoch && snapEpoch !== prevLoadedEpoch && etagChanged) {
+                    liveUpdates.targetEpoch = snapEpoch;
+                    liveUpdates.targetRevision = snapRevision;
+                }
+            } else {
+                const isEpochlessReset = prevLoadedRevision > 0
+                    && snapRevision < prevLoadedRevision
+                    && (etagChanged || payloadChanged || !targetChangedMidFlight);
+                if (isEpochlessReset || !targetChangedMidFlight) {
+                    liveUpdates.targetEpoch = null;
+                    liveUpdates.targetRevision = snapRevision;
+                } else if (snapRevision > Number(liveUpdates.targetRevision || 0)) {
+                    liveUpdates.targetRevision = snapRevision;
+                }
+            }
+        }
+
         if (!preservePage) {
             state.page = 1;
         }
@@ -1124,8 +1336,14 @@
         applyFiltersAndRender();
     }
 
+    function computeBackoffDelayMs(attempt, baseMs = 1000, maxMs = 30000) {
+        const exponential = Math.min(maxMs, baseMs * (2 ** attempt));
+        const jitterFactor = 0.75 + (Math.random() * 0.5);
+        return Math.max(250, Math.round(exponential * jitterFactor));
+    }
+
     function scheduleSnapshotRetry() {
-        const retryDelay = Math.min(30000, 1000 * (2 ** liveUpdates.refreshFailureCount));
+        const retryDelay = computeBackoffDelayMs(liveUpdates.refreshFailureCount);
         liveUpdates.refreshFailureCount = Math.min(liveUpdates.refreshFailureCount + 1, 5);
         scheduleListingsRefresh(retryDelay);
     }
@@ -1138,6 +1356,8 @@
 
         liveUpdates.refreshing = true;
         let shouldRetry = false;
+        const startedTargetEpoch = liveUpdates.targetEpoch;
+        const startedTargetRevision = liveUpdates.targetRevision;
         try {
             setBootstrapStatus('loading_listings', 'Loading listings...');
             const response = await fetch('/api/listings/snapshot', {
@@ -1160,10 +1380,17 @@
                 return;
             }
 
+            const responseEtag = typeof response.headers?.get === 'function'
+                ? response.headers.get('etag')
+                : null;
             const snapshot = await response.json();
             setServerUnavailable(false);
-            setSnapshot(snapshot, preservePage);
-            shouldRetry = liveUpdates.targetRevision > liveUpdates.revision;
+            setSnapshot(snapshot, preservePage, {
+                startedTargetEpoch,
+                startedTargetRevision,
+                responseEtag,
+            });
+            shouldRetry = isTargetAheadOfLoaded();
         } catch (error) {
             console.debug('live listings refresh failed', error);
             setBootstrapStatus('listings_refresh_failed', 'Unable to load listings. Retrying...');
@@ -1183,6 +1410,7 @@
 
     async function pollListingsRevision() {
         if (document.visibilityState === 'hidden') return;
+        liveUpdates.lastRevisionPollAtMs = Date.now();
 
         try {
             const response = await fetch('/api/listings/revision', {
@@ -1194,9 +1422,13 @@
             const body = await response.json();
             if (body?.revision === null || body?.revision === undefined) return;
             const revision = Number(body.revision);
-            if (!Number.isFinite(revision) || Number(revision) <= Number(liveUpdates.targetRevision || 0)) return;
+            const epoch = normalizeRevisionEpoch(body?.revision_epoch ?? body?.epoch);
+            if (!shouldAcceptRevisionTarget(revision, epoch)) return;
 
             liveUpdates.targetRevision = revision;
+            if (epoch) {
+                liveUpdates.targetEpoch = epoch;
+            }
             scheduleListingsRefresh(0);
         } catch (error) {
             console.debug('live listings revision poll failed', error);
@@ -1207,6 +1439,17 @@
         const activeSocket = liveUpdates.ws || liveUpdates.socket;
         const openState = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
         return Boolean(activeSocket && activeSocket.readyState === openState);
+    }
+
+    function shouldRunRevisionPoll(nowMs = Date.now()) {
+        if (document.visibilityState === 'hidden') return false;
+        if (!isLiveSocketOpen()) return true;
+        const lastActivity = Math.max(
+            Number(liveUpdates.lastWsEventAtMs || 0),
+            Number(liveUpdates.lastRevisionPollAtMs || 0),
+        );
+        if (lastActivity <= 0) return true;
+        return (nowMs - lastActivity) >= WS_SILENT_BACKSTOP_INTERVAL_MS;
     }
 
     function scheduleLiveSnapshotFetch() {
@@ -1238,7 +1481,7 @@
     function scheduleLiveReconnect() {
         if (liveUpdates.paused) return;
         window.clearTimeout(liveUpdates.retryTimer);
-        const retryDelay = Math.min(30000, 1000 * (2 ** liveUpdates.retryAttempt));
+        const retryDelay = computeBackoffDelayMs(liveUpdates.retryAttempt);
         liveUpdates.retryAttempt = Math.min(liveUpdates.retryAttempt + 1, 5);
         liveUpdates.retryTimer = window.setTimeout(connectLiveUpdates, retryDelay);
     }
@@ -1253,9 +1496,11 @@
         const socket = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
         liveUpdates.socket = socket;
         liveUpdates.ws = socket;
+        liveUpdates.lastWsEventAtMs = Date.now();
 
         socket.addEventListener('open', () => {
             liveUpdates.retryAttempt = 0;
+            liveUpdates.lastWsEventAtMs = Date.now();
             socket.send(JSON.stringify({ type: 'subscribe', channel: 'listing_changes' }));
         });
 
@@ -1263,10 +1508,19 @@
             try {
                 const message = JSON.parse(event.data);
                 if (message.type === 'listings_revision_changed') {
-                    if (typeof message.revision === 'number') {
+                    liveUpdates.lastWsEventAtMs = Date.now();
+                    const epoch = normalizeRevisionEpoch(message?.revision_epoch ?? message?.epoch);
+                    if (message.revision !== undefined && message.revision !== null) {
                         const revision = Number(message.revision);
-                        if (!Number.isFinite(revision) || Number(revision) <= Number(liveUpdates.targetRevision || 0)) return;
+                        if (!shouldAcceptRevisionTarget(revision, epoch)) return;
                         liveUpdates.targetRevision = revision;
+                        if (epoch) {
+                            liveUpdates.targetEpoch = epoch;
+                        }
+                    } else if (epoch && (!liveUpdates.targetEpoch || epoch > liveUpdates.targetEpoch)) {
+                        liveUpdates.targetEpoch = epoch;
+                    } else {
+                        return;
                     }
                     scheduleLiveSnapshotFetch();
                 }
@@ -1567,33 +1821,7 @@
         });
     }
 
-    if (typeof module !== 'undefined' && module.exports && !isBrowserBundle) {
-        module.exports.__test__ = {
-            applySnapshotExpiryTimestamps,
-            connectLiveUpdates,
-            isLiveSocketOpen,
-            listingDutyName,
-            listingMatchesFilters,
-            listingRenderSignature,
-            renderPhaseProgress,
-            renderDescription,
-            renderListingCard,
-            renderProgressTags,
-            normalizeSavedState,
-            pollListingsRevision,
-            pruneExpiredListings,
-            scheduleLiveSnapshotFetch,
-            scheduleListingsRefresh,
-            secondsUntilListingExpiry,
-            selectedCountLabel,
-            state,
-            updateTimeDisplays,
-            liveUpdates,
-        };
-        return;
-    }
-
-    document.addEventListener('visibilitychange', () => {
+    function handleVisibilityChange() {
         if (document.visibilityState === 'hidden') {
             liveUpdates.paused = true;
             if (liveUpdates.refreshTimer !== null) {
@@ -1614,12 +1842,54 @@
 
         liveUpdates.paused = false;
         connectLiveUpdates();
-        pollListingsRevision();
-        if (liveUpdates.pendingRefresh) {
+
+        if (liveUpdates.pendingRefresh || !state.snapshot || isTargetAheadOfLoaded()) {
             liveUpdates.pendingRefresh = false;
+            scheduleListingsRefresh(250);
+            return;
         }
-        scheduleListingsRefresh(250);
-    });
+
+        const snapshotAgeMs = Date.now() - Number(liveUpdates.lastSnapshotAtMs || 0);
+        if (!('WebSocket' in window) || snapshotAgeMs >= SNAPSHOT_RESUME_CHECK_MS) {
+            pollListingsRevision();
+        }
+    }
+
+    if (typeof module !== 'undefined' && module.exports && !isBrowserBundle) {
+        module.exports.__test__ = {
+            applySnapshotExpiryTimestamps,
+            connectLiveUpdates,
+            fetchSnapshot,
+            handleVisibilityChange,
+            isLiveSocketOpen,
+            isTargetAheadOfLoaded,
+            listingDutyName,
+            listingMatchesFilters,
+            listingRenderSignature,
+            renderListingsPage,
+            renderPhaseProgress,
+            renderDescription,
+            renderListingCard,
+            renderProgressTags,
+            normalizeSavedState,
+            pollListingsRevision,
+            pruneExpiredListings,
+            scheduleLiveReconnect,
+            scheduleLiveSnapshotFetch,
+            scheduleListingsRefresh,
+            scheduleSnapshotRetry,
+            secondsUntilListingExpiry,
+            selectedCountLabel,
+            setSnapshot,
+            shouldRunRevisionPoll,
+            state,
+            updateTimeDisplays,
+            liveUpdates,
+        };
+        return;
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     async function initialize() {
         addJsClass();
@@ -1640,7 +1910,7 @@
         await fetchSnapshot(false);
         connectLiveUpdates();
         setInterval(() => {
-            if (isLiveSocketOpen()) return;
+            if (!shouldRunRevisionPoll()) return;
             pollListingsRevision();
         }, REVISION_POLL_INTERVAL_MS);
         setInterval(updateTimeDisplays, 1000);

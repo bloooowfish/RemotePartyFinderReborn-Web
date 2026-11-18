@@ -30,8 +30,11 @@ const DEFAULT_WS_HEARTBEAT_MS = 30000;
 const DEFAULT_MAX_WS_BUFFERED_BYTES = 65536;
 const DEFAULT_WEBHOOK_MAX_BYTES = 16 * 1024;
 const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 15000;
+const DEFAULT_SNAPSHOT_STALE_GRACE_MS = 30000;
 const DEFAULT_REVISION_LOCAL_TTL_MS = 60000;
 const DEFAULT_SNAPSHOT_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const FAST_SNAPSHOT_PARSE_THRESHOLD_BYTES = 8192;
+const SNAPSHOT_METADATA_SLICE_BYTES = 4096;
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -58,11 +61,227 @@ const CONTENT_SECURITY_POLICY = [
 ].join('; ');
 
 function applySecurityHeaders(res) {
-  if (res.headersSent) return;
+  if (!res || res.headersSent || res.writableEnded || res.destroyed) return;
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+}
+
+function normalizeRevisionEpoch(value) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 128 || /[\s\u0000-\u001f\u007f]/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function skipWhitespace(text, index) {
+  let pos = index;
+  while (pos < text.length) {
+    const code = text.charCodeAt(pos);
+    if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+      pos += 1;
+    } else {
+      break;
+    }
+  }
+  return pos;
+}
+
+function readJsonStringToken(text, startIndex) {
+  if (text[startIndex] !== '"') return null;
+  let pos = startIndex + 1;
+  while (pos < text.length) {
+    const ch = text[pos];
+    if (ch === '\\') {
+      pos += 2;
+      continue;
+    }
+    if (ch === '"') {
+      try {
+        return {
+          value: JSON.parse(text.slice(startIndex, pos + 1)),
+          nextIndex: pos + 1,
+        };
+      } catch {
+        return null;
+      }
+    }
+    pos += 1;
+  }
+  return null;
+}
+
+function skipJsonComposite(text, startIndex) {
+  const opener = text[startIndex];
+  if (opener !== '{' && opener !== '[') return -1;
+  let depth = 0;
+  let pos = startIndex;
+  while (pos < text.length) {
+    const ch = text[pos];
+    if (ch === '"') {
+      pos += 1;
+      while (pos < text.length) {
+        if (text[pos] === '\\') {
+          pos += 2;
+        } else if (text[pos] === '"') {
+          pos += 1;
+          break;
+        } else {
+          pos += 1;
+        }
+      }
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      depth += 1;
+    } else if (ch === '}' || ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return pos + 1;
+      }
+    }
+    pos += 1;
+  }
+  return -1;
+}
+
+function extractTopLevelFromHeadSlice(head) {
+  let revision = null;
+  let revisionEpoch = null;
+  let pos = skipWhitespace(head, 0);
+  if (head[pos] !== '{') {
+    return { revision, revisionEpoch };
+  }
+  pos += 1;
+
+  while (pos < head.length) {
+    pos = skipWhitespace(head, pos);
+    if (pos >= head.length || head[pos] === '}') break;
+    if (head[pos] === ',') {
+      pos = skipWhitespace(head, pos + 1);
+    }
+    if (pos >= head.length || head[pos] !== '"') break;
+
+    const keyToken = readJsonStringToken(head, pos);
+    if (!keyToken) break;
+    const key = keyToken.value;
+    pos = skipWhitespace(head, keyToken.nextIndex);
+    if (head[pos] !== ':') break;
+    pos = skipWhitespace(head, pos + 1);
+    if (pos >= head.length) break;
+
+    const valStart = head[pos];
+    if (valStart === '"') {
+      const strToken = readJsonStringToken(head, pos);
+      if (!strToken) break;
+      if (key === 'revision_epoch' || (key === 'epoch' && revisionEpoch === null)) {
+        revisionEpoch = normalizeRevisionEpoch(strToken.value);
+      }
+      pos = strToken.nextIndex;
+    } else if (valStart === '{' || valStart === '[') {
+      if (key === 'listings') break;
+      const nextPos = skipJsonComposite(head, pos);
+      if (nextPos === -1) break;
+      pos = nextPos;
+    } else {
+      let endPos = pos;
+      while (endPos < head.length && !/[\s,}\]]/.test(head[endPos])) {
+        endPos += 1;
+      }
+      if (endPos === head.length && !/[\s,}\]]/.test(head[endPos - 1])) {
+        // Number/token may be truncated at the end of the slice.
+        break;
+      }
+      const token = head.slice(pos, endPos);
+      if (key === 'revision' && /^(0|[1-9]\d*)$/.test(token)) {
+        const parsed = Number(token);
+        if (Number.isSafeInteger(parsed) && parsed >= 0) {
+          revision = parsed;
+        }
+      }
+      pos = endPos;
+    }
+  }
+
+  return { revision, revisionEpoch };
+}
+
+function extractTopLevelFromTailSlice(tail) {
+  const lastBracket = tail.lastIndexOf(']');
+  if (lastBracket === -1) return { revision: null, revisionEpoch: null };
+  const afterBracket = tail.slice(lastBracket + 1).trim();
+  if (!afterBracket.endsWith('}')) return { revision: null, revisionEpoch: null };
+  const body = afterBracket.startsWith(',') ? afterBracket.slice(1).trimStart() : afterBracket;
+  if (!body || body === '}') return { revision: null, revisionEpoch: null };
+
+  try {
+    const parsed = JSON.parse(`{${body}`);
+    const revision = Number.isSafeInteger(parsed?.revision) && parsed.revision >= 0
+      ? parsed.revision
+      : null;
+    const revisionEpoch = normalizeRevisionEpoch(parsed?.revision_epoch ?? parsed?.epoch);
+    return { revision, revisionEpoch };
+  } catch {
+    return { revision: null, revisionEpoch: null };
+  }
+}
+
+function parseSnapshotFullJson(bodyPlain) {
+  try {
+    const parsed = JSON.parse(bodyPlain.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object') {
+      return { validJson: false, revision: null, revisionEpoch: null };
+    }
+    const revision = !Array.isArray(parsed) && Number.isSafeInteger(parsed.revision) && parsed.revision >= 0
+      ? parsed.revision
+      : null;
+    const revisionEpoch = !Array.isArray(parsed)
+      ? normalizeRevisionEpoch(parsed.revision_epoch ?? parsed.epoch)
+      : null;
+    return { validJson: true, revision, revisionEpoch };
+  } catch {
+    return { validJson: false, revision: null, revisionEpoch: null };
+  }
+}
+
+function extractSnapshotMetadata(bodyPlain) {
+  if (!Buffer.isBuffer(bodyPlain) || bodyPlain.length === 0) {
+    return { validJson: false, revision: null, revisionEpoch: null };
+  }
+
+  if (bodyPlain.length <= FAST_SNAPSHOT_PARSE_THRESHOLD_BYTES) {
+    return parseSnapshotFullJson(bodyPlain);
+  }
+
+  const head = bodyPlain.subarray(0, SNAPSHOT_METADATA_SLICE_BYTES).toString('utf8');
+  const tail = bodyPlain
+    .subarray(Math.max(0, bodyPlain.length - SNAPSHOT_METADATA_SLICE_BYTES))
+    .toString('utf8');
+
+  if (!head.trimStart().startsWith('{') || !tail.trimEnd().endsWith('}')) {
+    return { validJson: false, revision: null, revisionEpoch: null };
+  }
+
+  let { revision, revisionEpoch } = extractTopLevelFromHeadSlice(head);
+  if (revision === null || revisionEpoch === null) {
+    const fromTail = extractTopLevelFromTailSlice(tail);
+    if (revision === null && fromTail.revision !== null) {
+      revision = fromTail.revision;
+    }
+    if (revisionEpoch === null && fromTail.revisionEpoch !== null) {
+      revisionEpoch = fromTail.revisionEpoch;
+    }
+  }
+
+  if (revision !== null) {
+    return { validJson: true, revision, revisionEpoch };
+  }
+
+  return parseSnapshotFullJson(bodyPlain);
 }
 
 function isValidRequestTarget(rawUrl) {
@@ -199,7 +418,7 @@ function isAllowedWsOrigin(req, allowedWsOrigins, requireWsOrigin) {
 
 function createServer(options = {}) {
   const publicDir = path.resolve(options.publicDir || PUBLIC_DIR);
-  const staticHandler = createStaticHandler(publicDir);
+  const staticHandler = options.staticHandler || createStaticHandler(publicDir);
 
   const originBaseUrl = options.originBaseUrl
     ?? process.env.ORIGIN_BASE_URL
@@ -235,6 +454,9 @@ function createServer(options = {}) {
   const snapshotCacheTtlMs = Number(
     options.snapshotCacheTtlMs ?? process.env.SNAPSHOT_CACHE_TTL_MS ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS,
   );
+  const snapshotStaleGraceMs = Number(
+    options.snapshotStaleGraceMs ?? process.env.SNAPSHOT_STALE_GRACE_MS ?? DEFAULT_SNAPSHOT_STALE_GRACE_MS,
+  );
   const revisionLocalTtlMs = Number(
     options.revisionLocalTtlMs ?? process.env.REVISION_LOCAL_TTL_MS ?? DEFAULT_REVISION_LOCAL_TTL_MS,
   );
@@ -256,6 +478,7 @@ function createServer(options = {}) {
   });
 
   let currentListingsRevision = null;
+  let currentListingsEpoch = null;
   let lastRevisionWebhookAtMs = 0;
   let cachedSnapshot = null;
   let inflightSnapshotFetch = null;
@@ -287,7 +510,48 @@ function createServer(options = {}) {
     return headers;
   }
 
-  function relayHttp(req, res, requestUrl) {
+  function syncRevisionFromOriginRevisionResponse(rev, revEpoch) {
+    const hasValidRev = Number.isSafeInteger(rev) && rev >= 0;
+    if (revEpoch) {
+      if (!currentListingsEpoch || revEpoch > currentListingsEpoch) {
+        if (cachedSnapshot && cachedSnapshot.epoch !== revEpoch) {
+          cachedSnapshot = null;
+        }
+        currentListingsEpoch = revEpoch;
+        if (hasValidRev) {
+          currentListingsRevision = rev;
+        }
+        return;
+      }
+      if (revEpoch === currentListingsEpoch) {
+        if (hasValidRev && (currentListingsRevision === null || rev > currentListingsRevision)) {
+          currentListingsRevision = rev;
+        }
+        return;
+      }
+      if (
+        revEpoch !== currentListingsEpoch
+        && hasValidRev
+        && currentListingsRevision !== null
+        && rev < currentListingsRevision
+      ) {
+        if (cachedSnapshot && cachedSnapshot.epoch !== revEpoch) {
+          cachedSnapshot = null;
+        }
+        currentListingsEpoch = revEpoch;
+        currentListingsRevision = rev;
+      }
+      return;
+    }
+
+    if (!currentListingsEpoch && hasValidRev) {
+      if (currentListingsRevision === null || rev > currentListingsRevision) {
+        currentListingsRevision = rev;
+      }
+    }
+  }
+
+  function relayHttp(req, res, requestUrl, relayOptions = {}) {
     const target = originUrlFor(requestUrl);
     if (!target) {
       sendOriginUnavailable(req, res);
@@ -313,6 +577,45 @@ function createServer(options = {}) {
         }
         const responseHeaders = stripHopByHopHeaders(originRes.headers);
         res.writeHead(originRes.statusCode || 502, responseHeaders);
+
+        if (relayOptions.observeListingsRevision && originRes.statusCode === 200) {
+          const encoding = String(originRes.headers['content-encoding'] || '').trim().toLowerCase();
+          const headerEpoch = normalizeRevisionEpoch(originRes.headers['x-rpf-revision-epoch']);
+          const revChunks = [];
+          let revBytes = 0;
+          let overflow = false;
+          originRes.on('data', (chunk) => {
+            if (overflow) return;
+            revBytes += chunk.length;
+            if (revBytes > 4096) {
+              overflow = true;
+              return;
+            }
+            revChunks.push(chunk);
+          });
+          originRes.on('end', () => {
+            if (overflow || revBytes === 0) return;
+            const raw = Buffer.concat(revChunks, revBytes);
+            const applyParsed = (plainBuf) => {
+              try {
+                const parsed = JSON.parse(plainBuf.toString('utf8'));
+                const rev = Number(parsed?.revision);
+                const revEpoch = normalizeRevisionEpoch(parsed?.revision_epoch ?? parsed?.epoch) ?? headerEpoch;
+                syncRevisionFromOriginRevisionResponse(rev, revEpoch);
+              } catch {
+                // Ignore non-JSON payloads.
+              }
+            };
+            if (encoding === 'gzip') {
+              zlib.gunzip(raw, (err, plain) => {
+                if (!err && plain) applyParsed(plain);
+              });
+            } else if (!encoding || encoding === 'identity') {
+              applyParsed(raw);
+            }
+          });
+        }
+
         originRes.on('error', () => {
           if (!res.destroyed) res.destroy();
         });
@@ -341,26 +644,71 @@ function createServer(options = {}) {
     req.pipe(proxy);
   }
 
+  function isSnapshotStaleAgainstCurrent(snapshot) {
+    if (!snapshot) return true;
+    if (currentListingsEpoch) {
+      if (snapshot.epoch !== currentListingsEpoch) {
+        return true;
+      }
+      return currentListingsRevision !== null
+        && (snapshot.revision === null || currentListingsRevision > snapshot.revision);
+    }
+    return currentListingsRevision !== null
+      && (snapshot.revision === null || currentListingsRevision > snapshot.revision);
+  }
+
   function isSnapshotCacheFresh(snapshot, nowMs = Date.now()) {
     if (!snapshot) return false;
-    if (
-      currentListingsRevision !== null
-      && (snapshot.revision === null || currentListingsRevision > snapshot.revision)
-    ) {
+    if (isSnapshotStaleAgainstCurrent(snapshot)) {
       return false;
     }
     return (nowMs - snapshot.fetchedAtMs) < snapshotCacheTtlMs;
   }
 
-  function performOriginSnapshotFetch({ req, target, revalidationEtag, previousSnapshot }) {
+  function canServeStaleSnapshot(snapshot, nowMs = Date.now()) {
+    if (!snapshot) return false;
+    if (!Number.isFinite(snapshotStaleGraceMs) || snapshotStaleGraceMs <= 0) return false;
+    if (currentListingsEpoch && snapshot.epoch !== currentListingsEpoch) return false;
+    return (nowMs - snapshot.fetchedAtMs) < (snapshotCacheTtlMs + snapshotStaleGraceMs);
+  }
+
+  function performOriginSnapshotFetch({
+    req,
+    target,
+    revalidationEtag,
+    previousSnapshot,
+    startedForEpoch,
+    startedForRevision,
+  }) {
     return new Promise((resolve) => {
       let settled = false;
+      let proxy = null;
+      let activeOriginRes = null;
+
       const finish = (outcome) => {
         if (!settled) {
           settled = true;
+          if (deadlineTimer) {
+            clearTimeout(deadlineTimer);
+          }
           resolve(outcome);
         }
       };
+
+      const deadlineTimer = Number.isFinite(originTimeoutMs) && originTimeoutMs > 0
+        ? setTimeout(() => {
+          if (activeOriginRes && !activeOriginRes.destroyed) {
+            activeOriginRes.destroy();
+          }
+          if (proxy && !proxy.destroyed) {
+            proxy.destroy(new Error('origin snapshot deadline exceeded'));
+          }
+          finish({ kind: 'unavailable' });
+        }, originTimeoutMs)
+        : null;
+      if (deadlineTimer && typeof deadlineTimer.unref === 'function') {
+        deadlineTimer.unref();
+      }
 
       const client = target.protocol === 'https:' ? https : http;
       const agent = target.protocol === 'https:' ? httpsAgent : httpAgent;
@@ -372,76 +720,112 @@ function createServer(options = {}) {
         headers['if-none-match'] = revalidationEtag;
       }
 
-      const proxy = client.request(
-        target,
-        {
-          method: 'GET',
-          headers,
-          agent,
-          timeout: originTimeoutMs,
-        },
-        (originRes) => {
-          if (originRes.statusCode === 304 && previousSnapshot) {
-            originRes.on('error', () => finish({ kind: 'unavailable' }));
-            originRes.on('end', () => {
-              previousSnapshot.fetchedAtMs = Date.now();
-              cachedSnapshot = previousSnapshot;
-              finish({ kind: 'cached', snapshot: cachedSnapshot });
-            });
-            originRes.resume();
-            return;
-          }
-
-          const chunks = [];
-          let totalBytes = 0;
-          let exceededLimit = false;
-
-          originRes.on('data', (chunk) => {
-            if (settled || exceededLimit) return;
-            totalBytes += chunk.length;
-            if (totalBytes > snapshotCacheMaxBytes) {
-              exceededLimit = true;
+      try {
+        proxy = client.request(
+          target,
+          {
+            method: 'GET',
+            headers,
+            agent,
+            timeout: originTimeoutMs,
+          },
+          (originRes) => {
+            activeOriginRes = originRes;
+            if (settled) {
               originRes.destroy();
-              proxy.destroy();
-              finish({ kind: 'unavailable' });
-              return;
-            }
-            chunks.push(chunk);
-          });
-
-          originRes.on('error', () => finish({ kind: 'unavailable' }));
-          originRes.on('aborted', () => finish({ kind: 'unavailable' }));
-
-          originRes.on('end', async () => {
-            if (settled || exceededLimit) return;
-            const rawBody = Buffer.concat(chunks, totalBytes);
-            const cleanedHeaders = stripHopByHopHeaders(originRes.headers);
-
-            if (originRes.statusCode !== 200) {
-              finish({
-                kind: 'passthrough',
-                statusCode: originRes.statusCode || 502,
-                headers: cleanedHeaders,
-                body: rawBody,
-              });
               return;
             }
 
-            const encoding = String(originRes.headers['content-encoding'] || '').trim().toLowerCase();
-            let bodyPlain;
-            let bodyGzip;
-            try {
-              if (encoding === 'gzip') {
-                bodyGzip = rawBody;
-                bodyPlain = await gunzipAsync(bodyGzip);
-                if (bodyPlain.length > snapshotCacheMaxBytes) {
+            if (originRes.statusCode === 304 && previousSnapshot) {
+              originRes.on('error', () => finish({ kind: 'unavailable' }));
+              originRes.on('aborted', () => finish({ kind: 'unavailable' }));
+              originRes.on('close', () => {
+                if (!settled && !originRes.complete) {
                   finish({ kind: 'unavailable' });
+                }
+              });
+              originRes.on('end', () => {
+                if (settled) return;
+                previousSnapshot.fetchedAtMs = Date.now();
+                cachedSnapshot = previousSnapshot;
+                finish({ kind: 'cached', snapshot: cachedSnapshot });
+              });
+              originRes.resume();
+              return;
+            }
+
+            const chunks = [];
+            let totalBytes = 0;
+            let exceededLimit = false;
+
+            originRes.on('data', (chunk) => {
+              if (settled || exceededLimit) return;
+              totalBytes += chunk.length;
+              if (totalBytes > snapshotCacheMaxBytes) {
+                exceededLimit = true;
+                originRes.destroy();
+                proxy.destroy();
+                finish({ kind: 'unavailable' });
+                return;
+              }
+              chunks.push(chunk);
+            });
+
+            originRes.on('error', () => finish({ kind: 'unavailable' }));
+            originRes.on('aborted', () => finish({ kind: 'unavailable' }));
+            originRes.on('close', () => {
+              if (!settled && !originRes.complete) {
+                finish({ kind: 'unavailable' });
+              }
+            });
+
+            originRes.on('end', async () => {
+              if (settled || exceededLimit) return;
+              const rawBody = Buffer.concat(chunks, totalBytes);
+              const cleanedHeaders = stripHopByHopHeaders(originRes.headers);
+
+              if (originRes.statusCode !== 200) {
+                finish({
+                  kind: 'passthrough',
+                  statusCode: originRes.statusCode || 502,
+                  headers: cleanedHeaders,
+                  body: rawBody,
+                });
+                return;
+              }
+
+              const encoding = String(originRes.headers['content-encoding'] || '').trim().toLowerCase();
+              let bodyPlain;
+              let bodyGzip;
+              try {
+                if (encoding === 'gzip') {
+                  bodyGzip = rawBody;
+                  bodyPlain = await gunzipAsync(bodyGzip);
+                  if (bodyPlain.length > snapshotCacheMaxBytes) {
+                    finish({ kind: 'unavailable' });
+                    return;
+                  }
+                } else if (!encoding || encoding === 'identity') {
+                  bodyPlain = rawBody;
+                  bodyGzip = await gzipAsync(bodyPlain, { level: 6 });
+                } else {
+                  finish({
+                    kind: 'passthrough',
+                    statusCode: 200,
+                    headers: cleanedHeaders,
+                    body: rawBody,
+                  });
                   return;
                 }
-              } else if (!encoding || encoding === 'identity') {
-                bodyPlain = rawBody;
-                bodyGzip = await gzipAsync(bodyPlain, { level: 6 });
-              } else {
+              } catch {
+                finish({ kind: 'unavailable' });
+                return;
+              }
+
+              if (settled) return;
+
+              const metadata = extractSnapshotMetadata(bodyPlain);
+              if (!metadata.validJson) {
                 finish({
                   kind: 'passthrough',
                   statusCode: 200,
@@ -450,50 +834,87 @@ function createServer(options = {}) {
                 });
                 return;
               }
-            } catch {
-              finish({ kind: 'unavailable' });
-              return;
-            }
 
-            let parsedRevision = null;
-            try {
-              const parsed = JSON.parse(bodyPlain.toString('utf8'));
-              if (Number.isSafeInteger(parsed?.revision) && parsed.revision >= 0) {
-                parsedRevision = parsed.revision;
+              const parsedRevision = metadata.revision;
+              const snapshotEpoch = metadata.revisionEpoch
+                ?? normalizeRevisionEpoch(originRes.headers['x-rpf-revision-epoch']);
+
+              const originEtag = typeof originRes.headers.etag === 'string'
+                ? originRes.headers.etag.trim()
+                : '';
+              const { etagPlain, etagGzip } = deriveSnapshotEtags(originEtag, bodyPlain);
+              const contentType = originRes.headers['content-type'] || 'application/json; charset=utf-8';
+
+              const stateUnchangedDuringFetch = (
+                currentListingsEpoch === startedForEpoch
+                && currentListingsRevision === startedForRevision
+              );
+              const etagChanged = Boolean(
+                !previousSnapshot
+                || !previousSnapshot.originEtag
+                || !originEtag
+                || originEtag !== previousSnapshot.originEtag,
+              );
+
+              if (stateUnchangedDuringFetch) {
+                if (snapshotEpoch) {
+                  if (
+                    !currentListingsEpoch
+                    || snapshotEpoch > currentListingsEpoch
+                    || (etagChanged && snapshotEpoch !== currentListingsEpoch)
+                  ) {
+                    currentListingsEpoch = snapshotEpoch;
+                    if (parsedRevision !== null) {
+                      currentListingsRevision = parsedRevision;
+                    }
+                  } else if (
+                    snapshotEpoch === currentListingsEpoch
+                    && parsedRevision !== null
+                    && (currentListingsRevision === null || parsedRevision > currentListingsRevision)
+                  ) {
+                    currentListingsRevision = parsedRevision;
+                  }
+                } else if (parsedRevision !== null) {
+                  if (currentListingsRevision === null) {
+                    currentListingsRevision = parsedRevision;
+                  } else if (!currentListingsEpoch) {
+                    if (
+                      parsedRevision > currentListingsRevision
+                      || (etagChanged && parsedRevision < currentListingsRevision)
+                    ) {
+                      currentListingsRevision = parsedRevision;
+                    }
+                  }
+                }
               }
-            } catch {
-              finish({
-                kind: 'passthrough',
-                statusCode: 200,
-                headers: cleanedHeaders,
-                body: rawBody,
-              });
-              return;
-            }
 
-            const originEtag = typeof originRes.headers.etag === 'string'
-              ? originRes.headers.etag.trim()
-              : '';
-            const { etagPlain, etagGzip } = deriveSnapshotEtags(originEtag, bodyPlain);
-            const contentType = originRes.headers['content-type'] || 'application/json; charset=utf-8';
-
-            cachedSnapshot = {
-              revision: parsedRevision,
-              originEtag: originEtag || null,
-              etagPlain,
-              etagGzip,
-              bodyPlain,
-              bodyGzip,
-              contentType,
-              fetchedAtMs: Date.now(),
-            };
-            finish({ kind: 'cached', snapshot: cachedSnapshot });
-          });
-        },
-      );
+              cachedSnapshot = {
+                revision: parsedRevision,
+                epoch: snapshotEpoch,
+                originEtag: originEtag || null,
+                etagPlain,
+                etagGzip,
+                bodyPlain,
+                bodyGzip,
+                contentType,
+                fetchedAtMs: Date.now(),
+              };
+              finish({ kind: 'cached', snapshot: cachedSnapshot });
+            });
+          },
+        );
+      } catch {
+        finish({ kind: 'unavailable' });
+        return;
+      }
 
       proxy.on('timeout', () => proxy.destroy(new Error('origin timeout')));
       proxy.on('error', () => finish({ kind: 'unavailable' }));
+      proxy.on('close', () => {
+        if (!activeOriginRes && !settled) {
+          finish({ kind: 'unavailable' });
+        }
+      });
       proxy.end();
     });
   }
@@ -509,13 +930,13 @@ function createServer(options = {}) {
       }
 
       if (!inflightSnapshotFetch) {
+        const startedForEpoch = currentListingsEpoch;
         const startedForRevision = currentListingsRevision;
         const previousSnapshot = cachedSnapshot;
         const canSendConditional = Boolean(
           previousSnapshot
           && previousSnapshot.originEtag
-          && (startedForRevision === null
-            || (previousSnapshot.revision !== null && startedForRevision <= previousSnapshot.revision)),
+          && !isSnapshotStaleAgainstCurrent(previousSnapshot),
         );
         const revalidationEtag = canSendConditional ? previousSnapshot.originEtag : null;
 
@@ -524,35 +945,45 @@ function createServer(options = {}) {
           target,
           revalidationEtag,
           previousSnapshot,
+          startedForEpoch,
+          startedForRevision,
         }).finally(() => {
           if (inflightSnapshotFetch && inflightSnapshotFetch.promise === promise) {
             inflightSnapshotFetch = null;
           }
         });
 
-        inflightSnapshotFetch = { promise, startedForRevision };
+        inflightSnapshotFetch = { promise, startedForEpoch, startedForRevision };
       }
 
       const currentInflight = inflightSnapshotFetch;
       const outcome = await currentInflight.promise;
       if (outcome.kind !== 'cached') {
+        if (
+          (outcome.kind === 'unavailable' || (outcome.kind === 'passthrough' && outcome.statusCode >= 500))
+          && canServeStaleSnapshot(cachedSnapshot)
+        ) {
+          return { kind: 'cached', snapshot: cachedSnapshot };
+        }
         return outcome;
       }
 
-      if (
-        currentListingsRevision !== null
-        && (outcome.snapshot.revision === null || currentListingsRevision > outcome.snapshot.revision)
-        && (currentInflight.startedForRevision === null || currentInflight.startedForRevision < currentListingsRevision)
-      ) {
+      const hasNewerTarget = (
+        currentListingsEpoch !== currentInflight.startedForEpoch
+        || currentListingsRevision !== currentInflight.startedForRevision
+      );
+      if (hasNewerTarget && isSnapshotStaleAgainstCurrent(outcome.snapshot)) {
         continue;
       }
 
       return outcome;
     }
 
-    return cachedSnapshot
+    return cachedSnapshot && !isSnapshotStaleAgainstCurrent(cachedSnapshot)
       ? { kind: 'cached', snapshot: cachedSnapshot }
-      : { kind: 'unavailable' };
+      : (canServeStaleSnapshot(cachedSnapshot)
+        ? { kind: 'cached', snapshot: cachedSnapshot }
+        : { kind: 'unavailable' });
   }
 
   async function handleListingsSnapshot(req, res) {
@@ -587,7 +1018,7 @@ function createServer(options = {}) {
 
     if (etagMatches(req.headers['if-none-match'], etag)) {
       res.writeHead(304, {
-        'Cache-Control': 'no-store',
+        'Cache-Control': 'no-cache, max-age=0, must-revalidate',
         Vary: 'Accept-Encoding',
         ETag: etag,
       }).end();
@@ -597,7 +1028,7 @@ function createServer(options = {}) {
     const body = wantsGzip ? snapshot.bodyGzip : snapshot.bodyPlain;
     const headers = {
       'Content-Type': snapshot.contentType,
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'no-cache, max-age=0, must-revalidate',
       Vary: 'Accept-Encoding',
       ETag: etag,
       'Content-Length': body.length,
@@ -617,7 +1048,11 @@ function createServer(options = {}) {
       && lastRevisionWebhookAtMs > 0
       && (now - lastRevisionWebhookAtMs) < revisionLocalTtlMs
     ) {
-      const body = Buffer.from(JSON.stringify({ revision: currentListingsRevision }), 'utf8');
+      const payload = { revision: currentListingsRevision };
+      if (currentListingsEpoch) {
+        payload.revision_epoch = currentListingsEpoch;
+      }
+      const body = Buffer.from(JSON.stringify(payload), 'utf8');
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -627,14 +1062,24 @@ function createServer(options = {}) {
       return;
     }
 
-    relayHttp(req, res, requestUrl);
+    relayHttp(req, res, requestUrl, {
+      observeListingsRevision: req.method === 'GET',
+    });
   }
 
-  function broadcastListingsRevision(revision) {
-    const payload = JSON.stringify({
+  function buildWsRevisionMessage(revision, revisionEpoch) {
+    const payload = {
       type: 'listings_revision_changed',
       revision,
-    });
+    };
+    if (revisionEpoch) {
+      payload.revision_epoch = revisionEpoch;
+    }
+    return JSON.stringify(payload);
+  }
+
+  function broadcastListingsRevision(revision, revisionEpoch = currentListingsEpoch) {
+    const payload = buildWsRevisionMessage(revision, revisionEpoch);
 
     for (const client of wsServer.clients) {
       if (client.readyState !== WebSocket.OPEN || !client.rpfSubscribedToListings) {
@@ -679,11 +1124,8 @@ function createServer(options = {}) {
 
       socket.rpfSubscribedToListings = true;
       socket.send(JSON.stringify({ type: 'subscribed', channel: 'listing_changes' }));
-      if (currentListingsRevision !== null && currentListingsRevision > 0) {
-        socket.send(JSON.stringify({
-          type: 'listings_revision_changed',
-          revision: currentListingsRevision,
-        }));
+      if (currentListingsRevision !== null && (currentListingsRevision > 0 || currentListingsEpoch)) {
+        socket.send(buildWsRevisionMessage(currentListingsRevision, currentListingsEpoch));
       }
     });
   }
@@ -767,6 +1209,9 @@ function createServer(options = {}) {
     try {
       body = await readJsonBody(req);
     } catch (error) {
+      if (res.headersSent || res.destroyed || res.writableEnded) {
+        return;
+      }
       const status = error.statusCode || 400;
       if (status === 413) {
         res.writeHead(413, { Connection: 'close' }).end('payload too large', () => {
@@ -778,24 +1223,55 @@ function createServer(options = {}) {
       return;
     }
 
+    if (res.headersSent || res.destroyed || res.writableEnded) {
+      return;
+    }
+
     const revision = Number(body?.revision);
     if (!Number.isSafeInteger(revision) || revision < 0) {
       res.writeHead(400).end('invalid revision');
       return;
     }
 
-    lastRevisionWebhookAtMs = Date.now();
-    const applied = currentListingsRevision === null || revision > currentListingsRevision;
+    const epoch = normalizeRevisionEpoch(body?.revision_epoch ?? body?.epoch)
+      ?? normalizeRevisionEpoch(req.headers['x-rpf-revision-epoch']);
+
+    const isNewerEpoch = Boolean(epoch && (!currentListingsEpoch || epoch > currentListingsEpoch));
+    const isSameEpochAdvance = Boolean(
+      epoch
+      && currentListingsEpoch
+      && epoch === currentListingsEpoch
+      && (currentListingsRevision === null || revision > currentListingsRevision),
+    );
+    const isLegacyAdvance = Boolean(
+      !epoch
+      && !currentListingsEpoch
+      && (currentListingsRevision === null || revision > currentListingsRevision),
+    );
+    const applied = isNewerEpoch || isSameEpochAdvance || isLegacyAdvance;
+
     if (applied) {
+      lastRevisionWebhookAtMs = Date.now();
+      if (isNewerEpoch) {
+        if (cachedSnapshot && cachedSnapshot.epoch !== epoch) {
+          cachedSnapshot = null;
+        }
+        currentListingsEpoch = epoch;
+      }
       currentListingsRevision = revision;
-      broadcastListingsRevision(revision);
+      broadcastListingsRevision(revision, currentListingsEpoch);
+    }
+
+    const responsePayload = { ok: true, revision: currentListingsRevision, applied };
+    if (currentListingsEpoch) {
+      responsePayload.revision_epoch = currentListingsEpoch;
     }
 
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
     });
-    res.end(JSON.stringify({ ok: true, revision: currentListingsRevision, applied }));
+    res.end(JSON.stringify(responsePayload));
   }
 
   wsServer.on('connection', handleListingsWebSocket);
@@ -817,62 +1293,90 @@ function createServer(options = {}) {
   }
 
   const server = http.createServer(async (req, res) => {
-    applySecurityHeaders(res);
+    try {
+      applySecurityHeaders(res);
 
-    const requestUrl = parseRequestUrl(req);
-    if (!requestUrl) {
-      res.writeHead(400, { Connection: 'close' }).end('bad request');
-      return;
-    }
-
-    const { pathname } = requestUrl;
-
-    if (req.headers.upgrade || pathname === '/api/ws') {
-      res.writeHead(426, {
-        Connection: 'close',
-        Upgrade: 'websocket',
-      }).end('upgrade required');
-      return;
-    }
-
-    if (pathname === '/internal/listings/revision') {
-      await handleRevisionWebhook(req, res);
-      return;
-    }
-
-    if (pathname === '/') {
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
-        res.writeHead(405, { Allow: 'GET, HEAD' }).end('method not allowed');
+      const requestUrl = parseRequestUrl(req);
+      if (!requestUrl) {
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.writeHead(400, { Connection: 'close' }).end('bad request');
+        }
         return;
       }
-      res.writeHead(302, {
-        Location: `/listings${requestUrl.search}`,
-        'Cache-Control': 'no-cache',
-      }).end();
-      return;
-    }
 
-    if (pathname === '/contribute' || pathname.startsWith('/contribute/')) {
-      res.writeHead(404).end('not found');
-      return;
-    }
+      const { pathname } = requestUrl;
 
-    if (pathname === '/api/listings/revision' && (req.method === 'GET' || req.method === 'HEAD')) {
-      handleListingsRevision(req, res, requestUrl);
-      return;
-    }
+      if (req.headers.upgrade || pathname === '/api/ws') {
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.writeHead(426, {
+            Connection: 'close',
+            Upgrade: 'websocket',
+          }).end('upgrade required');
+        }
+        return;
+      }
 
-    if (pathname === '/api/listings/snapshot' && (req.method === 'GET' || req.method === 'HEAD')) {
-      await handleListingsSnapshot(req, res);
-      return;
-    }
+      if (pathname === '/internal/listings/revision') {
+        await handleRevisionWebhook(req, res);
+        return;
+      }
 
-    if (isRelayPath(pathname)) {
-      relayHttp(req, res, requestUrl);
-      return;
-    }
+      if (pathname === '/') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+            res.writeHead(405, { Allow: 'GET, HEAD' }).end('method not allowed');
+          }
+          return;
+        }
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.writeHead(302, {
+            Location: `/listings${requestUrl.search}`,
+            'Cache-Control': 'no-cache',
+          }).end();
+        }
+        return;
+      }
 
-    staticHandler.handleStatic(req, res, requestUrl);
+      if (pathname === '/contribute' || pathname.startsWith('/contribute/')) {
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.writeHead(404).end('not found');
+        }
+        return;
+      }
+
+      if (pathname === '/api/listings/revision' && (req.method === 'GET' || req.method === 'HEAD')) {
+        handleListingsRevision(req, res, requestUrl);
+        return;
+      }
+
+      if (pathname === '/api/listings/snapshot' && (req.method === 'GET' || req.method === 'HEAD')) {
+        await handleListingsSnapshot(req, res);
+        return;
+      }
+
+      if (isRelayPath(pathname)) {
+        relayHttp(req, res, requestUrl);
+        return;
+      }
+
+      staticHandler.handleStatic(req, res, requestUrl);
+    } catch (error) {
+      console.error('unhandled request error:', error && error.stack ? error.stack : String(error));
+      if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+        try {
+          res.writeHead(500, {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store',
+          }).end('internal server error');
+          return;
+        } catch {
+          // Fall through to destroy.
+        }
+      }
+      if (!res.destroyed) {
+        res.destroy();
+      }
+    }
   });
 
   server.headersTimeout = Number(options.headersTimeout ?? process.env.SERVER_HEADERS_TIMEOUT_MS ?? 15000);
@@ -970,9 +1474,11 @@ if (require.main === module) {
 module.exports = {
   applySecurityHeaders,
   createServer,
+  extractSnapshotMetadata,
   isAllowedWsOrigin,
   isRelayPath,
   isValidRequestTarget,
+  normalizeRevisionEpoch,
   SERVICE_UNAVAILABLE,
   pickLanguage,
   stripHopByHopHeaders,

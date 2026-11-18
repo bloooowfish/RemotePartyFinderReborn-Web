@@ -77,6 +77,7 @@ function escapeHtml(value) {
 }
 
 function sendOriginUnavailable(req, res, options = {}) {
+  if (!res || res.headersSent || res.writableEnded || res.destroyed) return;
   const message = SERVICE_UNAVAILABLE[pickLanguage(req)] || SERVICE_UNAVAILABLE.en;
   const acceptsHtml = options.html || String(req.headers.accept || '').includes('text/html');
 

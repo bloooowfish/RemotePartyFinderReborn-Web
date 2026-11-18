@@ -128,7 +128,7 @@ function createListingsRenderer(dependencies) {
         const label = String(phase?.display_text || '').trim();
         const mechanicName = String(phase?.phase_name || '').trim();
         const mechanicPercentage = phase?.boss_percentage;
-        if (phase?.source === 'tomestone_api'
+        if (typeof phase?.source === 'string' && phase.source.startsWith('tomestone')
             && phase?.order === 0
             && typeof phase?.phase_key === 'string'
             && phase.phase_key.startsWith('mechanic-')

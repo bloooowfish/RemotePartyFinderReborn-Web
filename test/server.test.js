@@ -8,6 +8,8 @@ const zlib = require('node:zlib');
 
 const {
   createServer,
+  extractSnapshotMetadata,
+  normalizeRevisionEpoch,
   isAllowedWsOrigin,
   isRelayPath,
   isValidRequestTarget,
@@ -1091,6 +1093,467 @@ test('/api/listings/revision serves directly from RAM during recent webhook hear
     assert.equal(fallbackRes.status, 200);
     assert.deepEqual(await fallbackRes.json(), { revision: 42 });
     assert.equal(originRevisionCalls, 2);
+  } finally {
+    await close(app);
+    await close(origin);
+  }
+});
+
+test('revision_epoch handles non-monotonic resets across webhook, WS, /api/listings/revision, and snapshot cache', async () => {
+  const epoch1 = '0000019a00000001-aaaaaaaaaaaaaaaa';
+  const epoch2 = '0000019a00000002-bbbbbbbbbbbbbbbb';
+  const epoch3 = '0000019a00000003-cccccccccccccccc';
+
+  let originEpoch = epoch1;
+  let originRevision = 50;
+  let originEtag = '"e1-50"';
+  let originRevCalls = 0;
+  let originSnapCalls = 0;
+
+  const origin = http.createServer((req, res) => {
+    if (req.url === '/api/listings/revision') {
+      originRevCalls += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ revision_epoch: originEpoch, revision: originRevision }));
+      return;
+    }
+    if (req.url === '/api/listings/snapshot') {
+      originSnapCalls += 1;
+      if (req.headers['if-none-match'] === originEtag) {
+        res.writeHead(304, { ETag: originEtag, 'Cache-Control': 'no-cache, max-age=0, must-revalidate' }).end();
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        ETag: originEtag,
+        'Cache-Control': 'no-cache, max-age=0, must-revalidate',
+      });
+      res.end(JSON.stringify({
+        revision_epoch: originEpoch,
+        revision: originRevision,
+        listings: [{ id: originRevision }],
+      }));
+      return;
+    }
+    res.writeHead(404).end('not found');
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({
+    originBaseUrl: originUrl,
+    revisionWebhookSecret: 'webhook-secret',
+    revisionLocalTtlMs: 80,
+    snapshotCacheTtlMs: 60,
+  });
+  const appUrl = await listen(app);
+
+  let ws;
+  try {
+    // 1. Webhook sets epoch1 / rev 50.
+    const wh1 = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 50, revision_epoch: epoch1 }),
+    });
+    assert.equal(wh1.status, 200);
+    assert.deepEqual(await wh1.json(), {
+      ok: true,
+      revision: 50,
+      applied: true,
+      revision_epoch: epoch1,
+    });
+
+    // Local /api/listings/revision includes revision_epoch when known.
+    const rev1 = await fetch(`${appUrl}/api/listings/revision`);
+    assert.deepEqual(await rev1.json(), { revision: 50, revision_epoch: epoch1 });
+    assert.equal(originRevCalls, 0);
+
+    // Subscribing WS receives initial revision + revision_epoch.
+    ws = new WebSocket(appUrl.replace(/^http:/, 'ws:') + '/api/ws');
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', reject, { once: true });
+    });
+    const initialMsgPromise = onceWebSocketMessage(ws, (m) => m.type === 'listings_revision_changed');
+    ws.send(JSON.stringify({ type: 'subscribe', channel: 'listing_changes' }));
+    const initialMsg = await initialMsgPromise;
+    assert.deepEqual(initialMsg, {
+      type: 'listings_revision_changed',
+      revision: 50,
+      revision_epoch: epoch1,
+    });
+
+    // Fetch snapshot for epoch1 / rev 50.
+    const snap1 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(snap1.status, 200);
+    assert.equal(originSnapCalls, 1);
+
+    // 2. Server reboots -> epoch2 / rev 1 (passed via x-rpf-revision-epoch header).
+    originEpoch = epoch2;
+    originRevision = 1;
+    originEtag = '"e2-1"';
+    const resetBroadcastPromise = onceWebSocketMessage(ws, (m) => m.type === 'listings_revision_changed');
+    const wh2 = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+        'x-rpf-revision-epoch': epoch2,
+      },
+      body: JSON.stringify({ revision: 1 }),
+    });
+    assert.equal(wh2.status, 200);
+    assert.deepEqual(await wh2.json(), {
+      ok: true,
+      revision: 1,
+      applied: true,
+      revision_epoch: epoch2,
+    });
+    assert.deepEqual(await resetBroadcastPromise, {
+      type: 'listings_revision_changed',
+      revision: 1,
+      revision_epoch: epoch2,
+    });
+
+    // Cached snapshot from epoch1 must be invalidated so edge fetches epoch2 / rev 1 cleanly.
+    const snap2 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(snap2.status, 200);
+    assert.equal(originSnapCalls, 2);
+    assert.equal(JSON.parse(snap2.body.toString('utf8')).revision_epoch, epoch2);
+    assert.equal(JSON.parse(snap2.body.toString('utf8')).revision, 1);
+
+    // 3. Expire local revision TTL, then send stale webhooks -> must NOT apply or bump lastRevisionWebhookAtMs.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const staleOldEpoch = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 999, revision_epoch: epoch1 }),
+    });
+    assert.deepEqual(await staleOldEpoch.json(), {
+      ok: true,
+      revision: 1,
+      applied: false,
+      revision_epoch: epoch2,
+    });
+
+    const staleLowerRev = await fetch(`${appUrl}/internal/listings/revision`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer webhook-secret',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ revision: 0, revision_epoch: epoch2 }),
+    });
+    assert.deepEqual(await staleLowerRev.json(), {
+      ok: true,
+      revision: 1,
+      applied: false,
+      revision_epoch: epoch2,
+    });
+
+    // Because stale webhooks did not refresh lastRevisionWebhookAtMs, /api/listings/revision must relay to origin.
+    originEpoch = epoch3;
+    originRevision = 1;
+    originEtag = '"e3-1"';
+    const revRelayed = await fetch(`${appUrl}/api/listings/revision`);
+    assert.equal(originRevCalls, 1);
+    assert.deepEqual(await revRelayed.json(), { revision_epoch: epoch3, revision: 1 });
+
+    // Waiting past snapshotCacheTtlMs fetches epoch3 / rev 1 cleanly without locking out cache.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const snap3 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(snap3.status, 200);
+    assert.equal(originSnapCalls, 3);
+    assert.equal(JSON.parse(snap3.body.toString('utf8')).revision_epoch, epoch3);
+    assert.equal(JSON.parse(snap3.body.toString('utf8')).revision, 1);
+  } finally {
+    if (ws && ws.readyState < WebSocket.CLOSING) {
+      const closed = new Promise((resolve) => ws.addEventListener('close', resolve, { once: true }));
+      ws.close();
+      await closed;
+    }
+    await close(app);
+    await close(origin);
+  }
+});
+
+test('snapshot cache handles epoch-less origin reboot reset when ETag changes and lower revision arrives', async () => {
+  let originRevision = 100;
+  let originEtag = '"legacy-100"';
+  let hits = 0;
+
+  const origin = http.createServer((req, res) => {
+    if (req.url !== '/api/listings/snapshot') {
+      res.writeHead(404).end();
+      return;
+    }
+    hits += 1;
+    if (req.headers['if-none-match'] === originEtag) {
+      res.writeHead(304, { ETag: originEtag }).end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', ETag: originEtag });
+    res.end(JSON.stringify({ revision: originRevision, listings: [{ id: originRevision }] }));
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({
+    originBaseUrl: originUrl,
+    snapshotCacheTtlMs: 40,
+  });
+  const appUrl = await listen(app);
+
+  try {
+    const first = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(first.status, 200);
+    assert.equal(JSON.parse(first.body.toString('utf8')).revision, 100);
+    assert.equal(hits, 1);
+
+    // Origin reboots without epoch -> revision drops 100 -> 1 with new ETag.
+    originRevision = 1;
+    originEtag = '"legacy-1"';
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const afterReset = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(afterReset.status, 200);
+    assert.equal(JSON.parse(afterReset.body.toString('utf8')).revision, 1);
+    assert.equal(hits, 2);
+
+    // Subsequent immediate request hits warm RAM cache (0 extra origin calls).
+    const cachedHit = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(cachedHit.status, 200);
+    assert.equal(JSON.parse(cachedHit.body.toString('utf8')).revision, 1);
+    assert.equal(hits, 2);
+  } finally {
+    await close(app);
+    await close(origin);
+  }
+});
+
+test('performOriginSnapshotFetch settles cleanly on premature upstream close (200 and 304) and hard deadline without wedging', async () => {
+  let connIndex = 0;
+  let trickleTimer = null;
+
+  const rawOrigin = net.createServer((socket) => {
+    connIndex += 1;
+    const mode = connIndex;
+    socket.on('data', () => {
+      if (mode === 1) {
+        // Premature close during 200 body without end.
+        socket.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{"revision":1');
+        setTimeout(() => socket.destroy(), 10);
+      } else if (mode === 2) {
+        // Healthy 200 to prove inflightSnapshotFetch did not wedge.
+        const body = JSON.stringify({ revision: 5, listings: [] });
+        socket.end(
+          `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: "ok-5"\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        );
+      } else if (mode === 3) {
+        // Premature close during conditional 304 response before headers complete.
+        socket.write('HTTP/1.1 304 Not Modified\r\nX-Partial: 1');
+        setTimeout(() => socket.destroy(), 10);
+      } else if (mode === 4) {
+        // Slowloris trickling 200 that defeats inactivity-only timeout.
+        socket.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{');
+        trickleTimer = setInterval(() => {
+          if (!socket.destroyed) socket.write(' ');
+        }, 20);
+        socket.once('close', () => {
+          if (trickleTimer) {
+            clearInterval(trickleTimer);
+            trickleTimer = null;
+          }
+        });
+      } else {
+        const body = JSON.stringify({ revision: 6, listings: [] });
+        socket.end(
+          `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: "ok-6"\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        );
+      }
+    });
+  });
+
+  const originPort = await new Promise((resolve) => {
+    rawOrigin.listen(0, '127.0.0.1', () => resolve(rawOrigin.address().port));
+  });
+  const app = createServer({
+    originBaseUrl: `http://127.0.0.1:${originPort}`,
+    originTimeoutMs: 75,
+    snapshotCacheTtlMs: 30,
+    snapshotStaleGraceMs: 0,
+  });
+  const appUrl = await listen(app);
+
+  try {
+    const res1 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(res1.status, 503);
+
+    const res2 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(res2.status, 200);
+    assert.equal(JSON.parse(res2.body.toString('utf8')).revision, 5);
+
+    // Wait past TTL so mode 3 sends conditional 304 and destroys prematurely.
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    const res3 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(res3.status, 503);
+
+    // Mode 4 triggers hard deadline timer even while trickling bytes every 20ms.
+    const res4 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(res4.status, 503);
+
+    // Mode 5 succeeds immediately after hard deadline cleared inflightSnapshotFetch.
+    const res5 = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(res5.status, 200);
+    assert.equal(JSON.parse(res5.body.toString('utf8')).revision, 6);
+  } finally {
+    if (trickleTimer) clearInterval(trickleTimer);
+    await close(app);
+    await close(rawOrigin);
+  }
+});
+
+test('request handler guards against unhandled async rejections before and after headers are sent', async () => {
+  const app = createServer({
+    staticHandler: {
+      handleStatic(req, res) {
+        if (req.url === '/boom-after') {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          throw new Error('boom after headers');
+        }
+        throw new Error('boom before headers');
+      },
+    },
+  });
+  const appUrl = await listen(app);
+
+  try {
+    const beforeRes = await fetch(`${appUrl}/boom-before`);
+    assert.equal(beforeRes.status, 500);
+    assert.equal(await beforeRes.text(), 'internal server error');
+
+    await assert.rejects(fetch(`${appUrl}/boom-after`));
+
+    // Server remains healthy after both throws.
+    const afterCheck = await fetch(`${appUrl}/boom-before`);
+    assert.equal(afterCheck.status, 500);
+  } finally {
+    await close(app);
+  }
+});
+
+test('extractSnapshotMetadata parses large header/tail snapshots without full JSON.parse and handles tiny/invalid payloads', () => {
+  assert.equal(normalizeRevisionEpoch('  0000019a00000001-abcd  '), '0000019a00000001-abcd');
+  assert.equal(normalizeRevisionEpoch('bad epoch'), null);
+  assert.equal(normalizeRevisionEpoch(''), null);
+
+  const paddingItem = { id: 1, description: `x`.repeat(12000), nested: { revision: 999, revision_epoch: 'decoy' } };
+  const largeHeaderBuf = Buffer.from(JSON.stringify({
+    revision_epoch: '0000019a00000005-1234567890abcdef',
+    revision: 88,
+    listings: [paddingItem],
+  }), 'utf8');
+  assert.ok(largeHeaderBuf.length > 8192);
+
+  const largeTailBuf = Buffer.from(
+    `{"listings":[${JSON.stringify(paddingItem)}],"revision":99,"revision_epoch":"0000019a00000006-fedcba0987654321"}`,
+    'utf8',
+  );
+
+  const originalParse = JSON.parse;
+  JSON.parse = (text, ...rest) => {
+    if (typeof text === 'string' && text.length > 4096) {
+      throw new Error('unexpected full-body JSON.parse on large snapshot');
+    }
+    return originalParse(text, ...rest);
+  };
+
+  try {
+    assert.deepEqual(extractSnapshotMetadata(largeHeaderBuf), {
+      validJson: true,
+      revision: 88,
+      revisionEpoch: '0000019a00000005-1234567890abcdef',
+    });
+
+    assert.deepEqual(extractSnapshotMetadata(largeTailBuf), {
+      validJson: true,
+      revision: 99,
+      revisionEpoch: '0000019a00000006-fedcba0987654321',
+    });
+
+    const invalidLargeHtml = Buffer.from(`<html>${'x'.repeat(10000)}</html>`, 'utf8');
+    assert.deepEqual(extractSnapshotMetadata(invalidLargeHtml), {
+      validJson: false,
+      revision: null,
+      revisionEpoch: null,
+    });
+  } finally {
+    JSON.parse = originalParse;
+  }
+
+  const tinyBuf = Buffer.from(JSON.stringify({ revision: 7, revision_epoch: '0000019a00000001-0001', listings: [] }));
+  assert.deepEqual(extractSnapshotMetadata(tinyBuf), {
+    validJson: true,
+    revision: 7,
+    revisionEpoch: '0000019a00000001-0001',
+  });
+});
+
+test('/api/listings/snapshot sets revalidation Cache-Control + Vary and serves bounded stale-while-error within grace window', async () => {
+  let failOrigin = false;
+  const origin = http.createServer((req, res) => {
+    if (req.url !== '/api/listings/snapshot') {
+      res.writeHead(404).end();
+      return;
+    }
+    if (failOrigin) {
+      res.writeHead(503).end('temporarily unavailable');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      ETag: '"snap-grace-1"',
+    });
+    res.end(JSON.stringify({ revision: 12, listings: [{ id: 12 }] }));
+  });
+
+  const originUrl = await listen(origin);
+  const app = createServer({
+    originBaseUrl: originUrl,
+    snapshotCacheTtlMs: 40,
+    snapshotStaleGraceMs: 120,
+  });
+  const appUrl = await listen(app);
+
+  try {
+    const initial = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(initial.status, 200);
+    assert.equal(initial.headers['cache-control'], 'no-cache, max-age=0, must-revalidate');
+    assert.equal(initial.headers.vary, 'Accept-Encoding');
+
+    const notMod = await httpGetRaw(`${appUrl}/api/listings/snapshot`, {
+      'If-None-Match': initial.headers.etag,
+    });
+    assert.equal(notMod.status, 304);
+    assert.equal(notMod.headers['cache-control'], 'no-cache, max-age=0, must-revalidate');
+    assert.equal(notMod.headers.vary, 'Accept-Encoding');
+
+    // Past TTL (40ms) but inside grace window (40 + 120 = 160ms): origin 503 serves stale cached 200.
+    failOrigin = true;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const staleServed = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(staleServed.status, 200);
+    assert.equal(JSON.parse(staleServed.body.toString('utf8')).revision, 12);
+
+    // Past grace window (> 160ms total age): origin 503 surfaces to client.
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    const expiredGrace = await httpGetRaw(`${appUrl}/api/listings/snapshot`);
+    assert.equal(expiredGrace.status, 503);
   } finally {
     await close(app);
     await close(origin);
