@@ -1,9 +1,12 @@
+const { resolveAssetUrl } = require('./utils');
+
 function createListingsRenderer(dependencies) {
     const {
         escapeHtml,
         translate,
         seStringText,
         listingDutyName,
+        assetUrl = resolveAssetUrl,
     } = dependencies;
 
     function renderBadgeLabel(key) {
@@ -38,7 +41,7 @@ function createListingsRenderer(dependencies) {
         }
 
         const symbolId = hasTank ? 'ROLE_TANK' : hasHealer ? 'ROLE_HEALER' : 'ROLE_DPS';
-        return `<svg class="slot-role-icon" viewBox="0 0 56 56" aria-hidden="true"><use href="/assets/role-icons.svg#${symbolId}"></use></svg>`;
+        return `<svg class="slot-role-icon" viewBox="0 0 56 56" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/role-icons.svg'))}#${symbolId}"></use></svg>`;
     }
 
     function renderDisplaySlots(listing) {
@@ -48,7 +51,7 @@ function createListingsRenderer(dependencies) {
             const roleClass = slot.role_class ? ` ${escapeHtml(slot.role_class)}` : '';
             const title = escapeHtml(slot.title || '');
             const icon = slot.filled && slot.icon_code
-                ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(slot.icon_code)}"></use></svg>`
+                ? `<svg viewBox="0 0 84 84" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/job-icons.svg'))}#${escapeHtml(slot.icon_code)}"></use></svg>`
                 : renderOpenSlotRoleIcon(slot.role_class);
 
             return `<div class="slot${filled}${roleClass}" data-slot-index="${slotIndex}" title="${title}">${icon}</div>`;
@@ -125,7 +128,7 @@ function createListingsRenderer(dependencies) {
         const label = String(phase?.display_text || '').trim();
         const mechanicName = String(phase?.phase_name || '').trim();
         const mechanicPercentage = phase?.boss_percentage;
-        if (phase?.source === 'tomestone_api'
+        if (typeof phase?.source === 'string' && phase.source.startsWith('tomestone')
             && phase?.order === 0
             && typeof phase?.phase_key === 'string'
             && phase.phase_key.startsWith('mechanic-')
@@ -231,7 +234,7 @@ function createListingsRenderer(dependencies) {
             ? `${renderParseRailTag(member.parse)}${renderProgressTags(memberProgress)}`
             : '';
         const jobIcon = member.job_code
-            ? `<svg class="job-icon ${escapeHtml(member.role_class || '')}" viewBox="0 0 84 84" aria-hidden="true"><use href="/assets/job-icons.svg#${escapeHtml(member.job_code)}"></use></svg>`
+            ? `<svg class="job-icon ${escapeHtml(member.role_class || '')}" viewBox="0 0 84 84" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/job-icons.svg'))}#${escapeHtml(member.job_code)}"></use></svg>`
             : `<span class="job-unknown" title="${escapeHtml(translate('unknown_job', 'Unknown job'))}">?</span>`;
         const fflogsLink = member.fflogs_character_url
             ? `<a class="fflogs-link" href="${escapeHtml(member.fflogs_character_url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(`Open FFLogs profile for ${member.name}`)}" title="Open FFLogs character profile">FF</a>`
@@ -346,19 +349,19 @@ function createListingsRenderer(dependencies) {
                         <div class="item creator">
                             <span class="text">${escapeHtml(seStringText(listing.creator_name))} @ ${escapeHtml(listing.home_world?.name || translate('unknown', 'Unknown'))}</span>
                             ${renderLeaderMeta(listing)}
-                            <span title="${escapeHtml(translate('creator', 'Creator'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#user"></use></svg></span>
+                            <span title="${escapeHtml(translate('creator', 'Creator'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/icons.svg'))}#user"></use></svg></span>
                         </div>
                         <div class="item world">
                             <span class="text">${escapeHtml(listing.created_world?.name || translate('unknown', 'Unknown'))}</span>
-                            <span title="${escapeHtml(translate('created_on', 'Created on'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#sphere"></use></svg></span>
+                            <span title="${escapeHtml(translate('created_on', 'Created on'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/icons.svg'))}#sphere"></use></svg></span>
                         </div>
                         <div class="item expires" data-expires-in="${escapeHtml(container.time_left_seconds || 0)}"${expiresAtAttr}>
                             <span class="text"></span>
-                            <span title="${escapeHtml(translate('expires', 'Expires'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#stopwatch"></use></svg></span>
+                            <span title="${escapeHtml(translate('expires', 'Expires'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/icons.svg'))}#stopwatch"></use></svg></span>
                         </div>
                         <div class="item updated" data-updated-at="${escapeHtml(container.updated_at_timestamp || 0)}">
                             <span class="text"></span>
-                            <span title="${escapeHtml(translate('updated', 'Updated'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="/assets/icons.svg#clock"></use></svg></span>
+                            <span title="${escapeHtml(translate('updated', 'Updated'))}"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><use href="${escapeHtml(assetUrl('/assets/icons.svg'))}#clock"></use></svg></span>
                         </div>
                     </div>
                     ${listing.is_alliance_view ? membersSection : ''}

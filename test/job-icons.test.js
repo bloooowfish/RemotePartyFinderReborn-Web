@@ -75,9 +75,10 @@ test('job filters and listing renderers use the generated local sprite', () => {
   assert.match(html, /\/assets\/job-icons\.svg#PLD/);
   assert.match(html, /id="BST" value="4294967296"/);
   assert.match(html, /\/assets\/job-icons\.svg#BST/);
-  assert.match(renderer, /\/assets\/job-icons\.svg#\$\{escapeHtml\(slot\.icon_code\)\}/);
-  assert.match(renderer, /\/assets\/job-icons\.svg#\$\{escapeHtml\(member\.job_code\)\}/);
-  assert.match(renderer, /\/assets\/role-icons\.svg#\$\{symbolId\}/);
+  assert.match(renderer, /escapeHtml\(assetUrl\(['"]\/assets\/job-icons\.svg['"]\)\)\}#\$\{escapeHtml\(slot\.icon_code\)\}/);
+  assert.match(renderer, /escapeHtml\(assetUrl\(['"]\/assets\/job-icons\.svg['"]\)\)\}#\$\{escapeHtml\(member\.job_code\)\}/);
+  assert.match(renderer, /escapeHtml\(assetUrl\(['"]\/assets\/role-icons\.svg['"]\)\)\}#\$\{symbolId\}/);
+  assert.match(renderer, /escapeHtml\(assetUrl\(['"]\/assets\/icons\.svg['"]\)\)\}#user/);
   assert.equal(packageJson.scripts['sync:job-icons'], 'node scripts/sync-job-icons.js');
   assert.equal(packageJson.scripts['sync:role-icons'], 'node scripts/sync-role-icons.js');
 });

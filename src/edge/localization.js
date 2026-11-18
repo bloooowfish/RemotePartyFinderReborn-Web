@@ -77,6 +77,7 @@ function escapeHtml(value) {
 }
 
 function sendOriginUnavailable(req, res, options = {}) {
+  if (!res || res.headersSent || res.writableEnded || res.destroyed) return;
   const message = SERVICE_UNAVAILABLE[pickLanguage(req)] || SERVICE_UNAVAILABLE.en;
   const acceptsHtml = options.html || String(req.headers.accept || '').includes('text/html');
 
@@ -90,6 +91,32 @@ function sendOriginUnavailable(req, res, options = {}) {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.end(message);
   }
+}
+
+function buildAssetManifest(assetVersions) {
+  if (!assetVersions || assetVersions.size === 0) return null;
+
+  const manifest = {};
+  for (const [pathname, version] of assetVersions.entries()) {
+    if (!version || /^\/assets\/listing-data(?:\.|$)/.test(pathname)) {
+      continue;
+    }
+    manifest[pathname] = `${pathname}?v=${version}`;
+  }
+  return Object.keys(manifest).length > 0 ? manifest : null;
+}
+
+function injectAssetManifest(html, assetVersions) {
+  const manifest = buildAssetManifest(assetVersions);
+  if (!manifest || /name="rpf-assets"/i.test(html)) {
+    return html;
+  }
+
+  const metaTag = `<meta name="rpf-assets" content="${escapeHtml(JSON.stringify(manifest))}" />`;
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `    ${metaTag}\n</head>`);
+  }
+  return html;
 }
 
 function localizeHtmlForLanguage(lang, html, assetVersions = null) {
@@ -117,6 +144,7 @@ function localizeHtmlForLanguage(lang, html, assetVersions = null) {
         return `${attr}="${pathname}?v=${version}${fragment}"`;
       },
     );
+    localized = injectAssetManifest(localized, assetVersions);
   }
 
   return localized;
@@ -131,7 +159,9 @@ module.exports = {
   LOCALIZED_HTML_VARY,
   SERVICE_UNAVAILABLE,
   SUPPORTED_LANGUAGES,
+  buildAssetManifest,
   escapeHtml,
+  injectAssetManifest,
   localizeHtml,
   localizeHtmlForLanguage,
   pickLanguage,

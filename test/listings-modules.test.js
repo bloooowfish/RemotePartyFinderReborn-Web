@@ -564,3 +564,16 @@ test('open party slots render role SVG icons and zero min_item_level renders as 
   assert.doesNotMatch(html, /parse-none">--<\/span>/);
   assert.match(html, /parse-none"[^>]*>—<\/span>/);
 });
+
+test('Tomestone Tier 2/3 sources (tomestone_web, tomestone_cdp) render mechanic progress while non-tomestone sources are ignored', () => {
+  const { renderPhaseProgress } = rendererWithTranslations();
+  for (const source of ['tomestone_api', 'tomestone_web', 'tomestone_cdp']) {
+    assert.equal(
+      renderPhaseProgress({ phase_progress: [mechanicProgress({ source })] }),
+      '<span class="tag tag-phase" title="Splattershed #2 35.82%">Splattershed #2 35.82%</span>',
+    );
+  }
+  for (const source of ['fflogs_web', 'other', '', null]) {
+    assert.equal(renderPhaseProgress({ phase_progress: [mechanicProgress({ source })] }), '');
+  }
+});
